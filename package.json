@@ -1,0 +1,9 @@
+{
+  "name": "tradebook",
+  "version": "1.0.0",
+  "description": "Offline-first wholesale & retail distribution app — orders, dispatch, customer khata, cash book, stock",
+  "main": "server.js",
+  "scripts": { "start": "node server.js" },
+  "engines": { "node": ">=18" },
+  "dependencies": { "express": "^4.21.2", "pg": "^8.13.1" }
+}
