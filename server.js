@@ -12,7 +12,8 @@ const SECRET = process.env.SECRET || 'dev-secret-change-me';
 const SEED_DEMO = process.env.SEED_DEMO !== 'false';
 const ROLES = ['owner', 'dispatch', 'taker'];
 const ALLOWED = {
-  owner: ['product', 'stock_in', 'customer', 'opening', 'cash_open', 'order', 'status', 'payment', 'expense', 'counter'],
+  owner: ['product', 'stock_in', 'customer', 'opening', 'cash_open', 'order', 'status', 'payment', 'expense', 'counter',
+    'supplier', 'sopening', 'purchase', 'supplier_pay', 'pay_review', 'settings', 'stock_adj', 'product_upd'],
   dispatch: ['customer', 'opening', 'status', 'payment'],
   taker: ['customer', 'opening', 'order', 'status', 'payment'],
 };
@@ -21,7 +22,7 @@ const ALLOWED = {
 function fileStore() {
   const file = process.env.DATA_FILE || path.join(__dirname, 'data', 'db.json');
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  let d = { events: [], users: [], seq: 0 };
+  let d = { events: [], users: [], seq: 0, epoch: 'e1' };
   try { d = JSON.parse(fs.readFileSync(file, 'utf8')); } catch (e) {}
   const ids = new Set(d.events.map(e => e.id));
   let timer;
@@ -34,6 +35,8 @@ function fileStore() {
       persist();
     },
     async since(s) { return d.events.filter(e => e.seq > s); },
+    async epoch() { return d.epoch || 'e1'; },
+    async clearEvents(ep) { d.events = []; ids.clear(); d.epoch = ep; persist(); },
     async count() { return d.events.length; },
     async users() { return d.users; },
     async addUser(u) { d.users.push(u); persist(); },
@@ -59,6 +62,12 @@ function pgStore() {
       await q(`CREATE TABLE IF NOT EXISTS events(
         seq bigserial PRIMARY KEY, id text UNIQUE NOT NULL, t text NOT NULL, p jsonb NOT NULL, ts bigint NOT NULL,
         by_id text, by_name text, by_role text, received bigint)`);
+      await q(`CREATE TABLE IF NOT EXISTS meta(k text PRIMARY KEY, v text)`);
+    },
+    async epoch() { const r = await q(`SELECT v FROM meta WHERE k='epoch'`); return r.rows[0] ? r.rows[0].v : 'e1'; },
+    async clearEvents(ep) {
+      await q('DELETE FROM events');
+      await q(`INSERT INTO meta(k,v) VALUES('epoch',$1) ON CONFLICT(k) DO UPDATE SET v=$1`, [ep]);
     },
     async insert(evs) {
       if (!evs.length) return;
@@ -151,7 +160,7 @@ app.post('/api/sync', auth, wrap(async (req, res) => {
   await store.updateUser(u.id, { lastSeen: Date.now() });
   const events = await store.since(since);
   const users = (await store.users()).map(publicUser);
-  res.json({ events, seq: events.length ? events[events.length - 1].seq : since, rejected, users, me: publicUser(u) });
+  res.json({ events, seq: events.length ? events[events.length - 1].seq : since, rejected, users, me: publicUser(u), epoch: await store.epoch() });
 }));
 
 app.get('/api/users', auth, ownerOnly, wrap(async (req, res) => res.json((await store.users()).map(publicUser))));
@@ -179,6 +188,14 @@ app.patch('/api/users/:id', auth, ownerOnly, wrap(async (req, res) => {
     f.pinHash = hashPin(req.body.pin);
   }
   await store.updateUser(req.params.id, f);
+  res.json({ ok: true });
+}));
+
+// Owner: wipe all records (keeps users). demo=true reloads sample data.
+app.post('/api/reset', auth, ownerOnly, wrap(async (req, res) => {
+  if (req.body.confirm !== 'RESET') return res.status(400).json({ error: 'Type RESET to confirm' });
+  await store.clearEvents('e' + Date.now());
+  if (req.body.demo) await store.insert(seedEvents());
   res.json({ ok: true });
 }));
 

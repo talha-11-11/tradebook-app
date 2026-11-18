@@ -1,5 +1,7 @@
 # TradeBook — Distribution App (offline-first)
 
+Demo set up for **Bhawan Das Traders, Hyderabad** (change under Owner ▾ → Business details).
+
 Orders · Dispatch · Customer khata (ledger) · Cash book · Stock — for a wholesale/retail distributor.
 Works without internet on each phone and syncs automatically when the connection returns.
 
@@ -11,6 +13,18 @@ Works without internet on each phone and syncs automatically when the connection
 
 Demo logins (created automatically on first start): `owner / 1234`, `ali / 1111`. Add more order takers from Manage users.
 Change these PINs from **Owner → Name ▾ → Manage users** before real use.
+
+## Features
+- **Orders → Dispatch → Delivery** with bills added to each shop's khata
+- **Counter sales** (walk-in cash, or to a customer with full / partial / no payment → udhaar in khata), receipts
+- **Recovery approval**: payments collected by order takers wait for the owner's approval before hitting the khata
+- **Supplier accounts**: purchases (multi-item, partly paid), supplier payments, payable balances
+- **PDFs** (open / print / download / share on WhatsApp, work offline): order slip, bill/invoice, cash memo, purchase voucher,
+  customer & supplier statements (date range, or all in one PDF), loading sheet, pick-list, orders report, cash book,
+  business summary, customer balances, supplier balances, stock report
+- **Partial dispatch**: load only what's available; missing items are excluded from the bill (optional back-order), with a printable **dispatch slip / delivery challan**
+- **Inventory**: purchases add stock, dispatch & counter sales remove it; stock adjustments (damage, count correction) and per-product movement history
+- **Business details** (name/address/phone on PDFs) and **Reset data** (start empty to go live) under Owner → name ▾
 
 ## Deploy (GitHub + Render + Neon)
 1. **Neon** → create a project → copy the connection string (`postgresql://…neon.tech/neondb?sslmode=require`).

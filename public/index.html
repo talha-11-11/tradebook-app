@@ -80,6 +80,38 @@ table{width:100%;border-collapse:collapse;font-size:13px}td,th{padding:8px 4px;b
 .login h1{margin:0 0 4px;font-size:26px}
 .uchip{background:rgba(255,255,255,.15);border:0;color:#fff;border-radius:10px;padding:6px 10px;font:600 13px Inter,sans-serif;cursor:pointer;text-align:left}
 .hd-r{display:flex;gap:8px;align-items:center}
+nav button{font-size:10.5px;padding:9px 0 11px}nav .ic{font-size:18px}
+.rgrid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:14px}.rgrid .btn{text-align:left;font-size:13px;line-height:1.3}.rgrid .btn span{font-weight:400;font-size:11px;opacity:.75}
+.kpi.click{cursor:pointer}.kpi.click:active{background:#f3f4f6}.warn.click{cursor:pointer}
+.uchip{white-space:nowrap}.brand{max-width:150px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+.navbrand{display:none}
+@media (hover:hover){.click:hover{background:#fafbfb}.btn:hover{filter:brightness(.96)}nav button:hover{color:#0f766e}}
+@media (min-width:900px){
+  body{background:#eef1f4}
+  #app{max-width:none;min-height:100vh;background:#f5f6f8}
+  #app.in{padding:0 0 30px 240px}
+  #app.out .login{max-width:420px;margin:0 auto}
+  header{padding:14px 28px}
+  header .brand{max-width:none;font-size:20px}
+  .banner{padding:10px 28px}
+  main{max-width:1080px;margin:0 auto;padding:24px 28px}
+  nav{left:0;top:0;bottom:0;transform:none;width:240px;max-width:none;flex-direction:column;justify-content:flex-start;border-top:0;border-right:1px solid #e5e7eb;padding:0 12px;gap:2px;overflow-y:auto}
+  .navbrand{display:block;font-weight:700;font-size:16px;color:#0f766e;padding:20px 10px 18px;border-bottom:1px solid #eef0f2;margin-bottom:10px;line-height:1.3}
+  .navbrand span{display:block;font-weight:500;font-size:12px;color:#6b7280;margin-top:3px}
+  nav button{flex:0 0 auto;flex-direction:row;justify-content:flex-start;gap:12px;padding:11px 12px;font-size:14px;border-radius:10px}
+  nav button.act{background:#e6f4f2}
+  nav .ic{font-size:18px;width:22px;text-align:center}
+  .kpis{grid-template-columns:repeat(4,1fr);gap:12px}
+  .kpi .v{font-size:21px}
+  .ov{align-items:center;padding:24px}
+  .sh{border-radius:18px;max-width:720px;max-height:88vh;padding:22px 24px 26px}
+  .cartbar{left:calc(240px + (100vw - 240px) / 2);width:min(1024px, calc(100vw - 296px));max-width:none;bottom:20px}
+  #toast{top:76px;left:calc(240px + (100vw - 240px) / 2)}
+  .rgrid{grid-template-columns:1fr 1fr 1fr}
+  .bars{height:180px}
+}
+@media (min-width:1300px){ main{max-width:1180px} }
 </style>
 </head>
 <body>
