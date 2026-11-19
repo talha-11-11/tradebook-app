@@ -11,7 +11,8 @@ Works without internet on each phone and syncs automatically when the connection
 | **Order Taker** | Visits shops, takes orders (wholesale/retail rate), adds new shops, collects recovery |
 | **Owner** (also dispatches) | Dispatch tab: new orders → dispatch (stock out + bill to shop khata) → delivered with cash collected. Plus dashboard (sales, profit, cash, udhaar), every shop's khata, cash book (counter sale, expense, purchase), stock in, users |
 
-Demo logins (created automatically on first start): `owner / 1234`, `ali / 1111`. Add more order takers from Manage users.
+First start creates only the owner login `owner / 1234` and an empty database (no demo data). Add order takers from Owner ▾ → Users.
+Set `SEED_DEMO=true` before the first start if you want sample data for a demo.
 Change these PINs from **Owner → Name ▾ → Manage users** before real use.
 
 ## Features
@@ -24,6 +25,11 @@ Change these PINs from **Owner → Name ▾ → Manage users** before real use.
   business summary, customer balances, supplier balances, stock report
 - **Partial dispatch**: load only what's available; missing items are excluded from the bill (optional back-order), with a printable **dispatch slip / delivery challan**
 - **Inventory**: purchases add stock, dispatch & counter sales remove it; stock adjustments (damage, count correction) and per-product movement history
+- **Price per customer**: each customer gets Wholesale, Retail or Custom price (own price list); orders and counter sales start with it
+- **Supplier advance**: pay before goods arrive — advance is adjusted automatically in the next purchase
+- **Approve all** pending recoveries in one tap; payment receipts for every recovery
+- **Thermal printing** (80mm / 58mm) for order slip, bill, dispatch slip, cash memo, purchase voucher, payment receipt, statements — switch to A4 any time
+- **Product report** (monthly): opening, purchased (from which supplier, at what price), sold (to whom, at what price), closing, profit
 - **Business details** (name/address/phone on PDFs) and **Reset data** (start empty to go live) under Owner → name ▾
 
 ## Deploy (GitHub + Render + Neon)

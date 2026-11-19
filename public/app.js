@@ -41,7 +41,7 @@ const jset = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); retur
 let sess = jget('tb_sess');           // {token, user}
 let D = null;                          // {events, seq, outbox, lastSync, users, epoch}
 const ui = { tab: null, cart: {}, shop: '', rate: 'w', q: '', note: '', filter: 'all', syncing: false, online: navigator.onLine, sheet: null,
-  dq: {}, dbko: true, dveh: '', adjm: 'chg', ccart: {}, ccid: '', crate: 'r', cq: '', plines: [], psid: '', ppaid: null, busy: false, pdf: null };
+  dq: {}, dbko: true, dveh: '', adjm: 'chg', ccart: {}, ccid: '', crate: 'r', orates: {}, ccr: {}, cq: '', plines: [], psid: '', ppaid: null, busy: false, pdf: null };
 const me = () => sess.user;
 const role = () => sess.user.role;
 const isOwner = () => sess.user.role === 'owner';
@@ -55,10 +55,10 @@ function view() { return build(D.events.concat(D.outbox.map(e => ({ ...e, _p: 1 
 function profit(items, S) { return sum(items, i => { const p = S.products[i.pid]; return p ? (i.rate - p.cost) * i.qty : 0; }); }
 function build(evs) {
   const S = { products: {}, customers: {}, suppliers: {}, orders: {}, counters: {}, purchases: {}, pays: {},
-    ledger: [], sledger: [], cash: [], sales: [], moves: [], settings: { bizName: 'My Business', address: '', phone: '', footer: 'Thank you for your business' } };
+    ledger: [], sledger: [], cash: [], sales: [], moves: [], lines: [], plines: [], payRec: {}, settings: { bizName: 'My Business', address: '', phone: '', footer: 'Thank you for your business', paper: 't80' } };
   const applyPay = (p, ts, cashTs, byName, pend, extra) => {
     const c = S.customers[p.cid]; if (c) c.bal -= p.amt;
-    S.ledger.push({ ts, cid: p.cid, desc: (p.note || 'Payment received') + (p.method ? ` (${p.method})` : ''), dr: 0, cr: p.amt, pend, byName });
+    S.ledger.push({ ts, cid: p.cid, desc: (p.note || 'Payment received') + (p.method ? ` (${p.method})` : ''), dr: 0, cr: +p.amt, pend, byName, payOid: p.oid });
     S.cash.push({ ts: cashTs, type: 'in', cat: 'Recovery', desc: `${c ? c.name : ''} — ${p.note || 'Payment'}${p.method ? ' · ' + p.method : ''}${extra || ''}`, amt: p.amt, pend, byName });
   };
   const mv = (ts, pid, qty, type, ref, pend) => { if (qty) S.moves.push({ ts, pid, qty, type, ref, pend }); };
@@ -72,10 +72,13 @@ function build(evs) {
       case 'stock_in': { // legacy single-item purchase
         const pr = S.products[p.pid]; if (!pr) break;
         pr.stock += p.qty; if (p.cost) pr.cost = p.cost; mv(e.ts, p.pid, p.qty, 'Purchase', p.supplier || '', pend);
+        S.plines.push({ ts: e.ts, pid: p.pid, qty: p.qty, cost: p.cost || pr.cost, supName: p.supplier || 'Supplier', ref: '' });
         S.cash.push({ ts: e.ts, type: 'out', cat: 'Purchase', desc: `${pr.name} × ${p.qty} — ${p.supplier || 'Supplier'}`, amt: p.qty * (p.cost || pr.cost), pend });
         break;
       }
-      case 'customer': S.customers[p.id] = { type: 'shop', ...p, bal: 0, pend }; break;
+      case 'customer': S.customers[p.id] = { type: 'shop', priceType: 'w', ...p, prices: { ...(p.prices || {}) }, bal: 0, pend }; break;
+      case 'customer_upd': { const c = S.customers[p.id]; if (c) ['name', 'area', 'phone', 'type', 'priceType'].forEach(k => { if (p[k] != null) c[k] = p[k]; }); break; }
+      case 'cust_price': { const c = S.customers[p.cid]; if (c) { Object.entries(p.prices || {}).forEach(([k, v]) => { if (v === null || v === '') delete c.prices[k]; else c.prices[k] = +v; }); if (p.priceType) c.priceType = p.priceType; } break; }
       case 'opening': { const c = S.customers[p.cid]; if (c) { c.bal += p.amt; S.ledger.push({ ts: e.ts, cid: p.cid, desc: 'Opening balance', dr: p.amt, cr: 0, pend }); } break; }
       case 'cash_open': S.cash.push({ ts: e.ts, type: 'in', cat: 'Opening', desc: 'Opening cash in hand', amt: p.amt, pend }); break;
       case 'order': S.orders[p.id] = { ...p, status: 'pending', by: e.by, byName: e.byName, ts: e.ts, pend, hist: [{ s: 'pending', ts: e.ts, byName: e.byName, pend }] }; break;
@@ -89,7 +92,7 @@ function build(evs) {
             o.ordered = o.items; o.short = p.short || [];
             o.items = p.items.filter(i => i.qty > 0); o.total = sum(o.items, i => i.qty * i.rate);
           }
-          o.items.forEach(i => { const pr = S.products[i.pid]; if (pr) pr.stock -= i.qty; mv(e.ts, i.pid, -i.qty, 'Dispatch', o.no, pend); });
+          o.items.forEach(i => { const pr = S.products[i.pid]; if (pr) { S.lines.push({ ts: e.ts, pid: i.pid, qty: i.qty, rate: i.rate, cost: pr.cost, cid: o.cid, ref: o.no, kind: 'Bill' }); pr.stock -= i.qty; } mv(e.ts, i.pid, -i.qty, 'Dispatch', o.no, pend); });
           const c = S.customers[o.cid]; if (c) c.bal += o.total;
           S.ledger.push({ ts: e.ts, cid: o.cid, desc: `Bill ${o.no}`, oid: o.id, dr: o.total, cr: 0, pend });
           S.sales.push({ ts: e.ts, amt: o.total, profit: profit(o.items, S), kind: 'wholesale', ref: o.id });
@@ -100,6 +103,7 @@ function build(evs) {
         break;
       }
       case 'payment': {
+        S.payRec[e.id] = { id: e.id, ...p, ts: e.ts, byName: e.byName, byRole: e.byRole, pend };
         if (e.byRole === 'taker') { // recovery by order taker → waits for owner approval
           S.pays[e.id] = { id: e.id, ...p, ts: e.ts, byName: e.byName, by: e.by, status: 'pending', pend };
           const c = S.customers[p.cid]; if (c) c.awaiting = (c.awaiting || 0) + p.amt;
@@ -116,8 +120,8 @@ function build(evs) {
       case 'expense': S.cash.push({ ts: e.ts, type: 'out', cat: p.cat, desc: p.desc, amt: p.amt, pend, byName: e.byName }); break;
       case 'counter': {
         const paid = p.paid ?? p.total; const pf = profit(p.items, S);
-        p.items.forEach(i => { const pr = S.products[i.pid]; if (pr) pr.stock -= i.qty; mv(e.ts, i.pid, -i.qty, 'Counter sale', p.no || '', pend); });
         const c = p.cid && S.customers[p.cid];
+        p.items.forEach(i => { const pr = S.products[i.pid]; if (pr) { S.lines.push({ ts: e.ts, pid: i.pid, qty: i.qty, rate: i.rate, cost: pr.cost, cid: p.cid || '', walkin: c ? '' : (p.cust || 'Walk-in'), ref: p.no || '', kind: 'Counter' }); pr.stock -= i.qty; } mv(e.ts, i.pid, -i.qty, 'Counter sale', p.no || '', pend); });
         const custName = c ? c.name : (p.cust || 'Walk-in');
         S.counters[p.id || e.id] = { ...p, id: p.id || e.id, paid, ts: e.ts, custName, pend, byName: e.byName };
         if (c) {
@@ -133,7 +137,7 @@ function build(evs) {
       case 'sopening': { const s = S.suppliers[p.sid]; if (s) { s.bal += p.amt; S.sledger.push({ ts: e.ts, sid: p.sid, desc: 'Opening balance (payable)', bill: p.amt, paid: 0, pend }); } break; }
       case 'purchase': {
         const s = S.suppliers[p.sid];
-        p.items.forEach(i => { const pr = S.products[i.pid]; if (pr) { pr.stock += i.qty; if (i.cost) pr.cost = i.cost; mv(e.ts, i.pid, i.qty, 'Purchase', p.no, pend); } });
+        p.items.forEach(i => { const pr = S.products[i.pid]; if (pr) { pr.stock += i.qty; if (i.cost) pr.cost = i.cost; mv(e.ts, i.pid, i.qty, 'Purchase', p.no, pend); S.plines.push({ ts: e.ts, pid: i.pid, qty: i.qty, cost: i.cost, sid: p.sid, supName: s ? s.name : 'Cash purchase', ref: p.no }); } });
         S.purchases[p.id] = { ...p, ts: e.ts, supName: s ? s.name : (p.supName || 'Cash purchase'), pend };
         if (s) {
           s.bal += p.total - (p.paid || 0);
@@ -155,6 +159,15 @@ function build(evs) {
 }
 function custLedger(S, cid) { let run = 0; return S.ledger.filter(l => l.cid === cid).sort((a, b) => a.ts - b.ts).map(l => { run += l.dr - l.cr; return { ...l, run }; }); }
 function supLedger(S, sid) { let run = 0; return S.sledger.filter(l => l.sid === sid).sort((a, b) => a.ts - b.ts).map(l => { run += l.bill - l.paid; return { ...l, run }; }); }
+const PT = { w: 'Wholesale', r: 'Retail', c: 'Custom' };
+function rateOf(c, p, mode, over) {
+  if (mode === 'r') return p.r;
+  if (mode === 'c') { const v = over && over[p.id]; if (v !== undefined && v !== '' && v !== null) return +v; const cp = c && c.prices && c.prices[p.id]; return cp != null ? +cp : p.w; }
+  return p.w;
+}
+function pickShop(v) { ui.shop = v; const c = view().customers[v]; ui.rate = (c && c.priceType) || 'w'; ui.orates = {}; render(); }
+function pickCC(v) { ui.ccid = v; const c = view().customers[v]; ui.crate = c ? (c.priceType || 'w') : 'r'; ui.ccr = {}; render(); }
+function setOver(key, pid, v) { ui[key][pid] = v; render(); }
 const pendingPays = S => Object.values(S.pays).filter(p => p.status === 'pending').sort((a, b) => a.ts - b.ts);
 
 /* ---------- server calls & sync ---------- */
@@ -258,16 +271,19 @@ function nextNo(type, pre) {
 function saveOrder() {
   const S = view();
   if (!ui.shop) { toast('Please select a shop first'); return; }
-  const items = Object.entries(ui.cart).map(([pid, qty]) => { const p = S.products[pid]; return { pid, qty, rate: ui.rate === 'w' ? p.w : p.r }; });
+  const c = S.customers[ui.shop]; const items = Object.entries(ui.cart).filter(([pid]) => S.products[pid]).map(([pid, qty]) => ({ pid, qty, rate: rateOf(c, S.products[pid], ui.rate, ui.orates) }));
   if (!items.length) { toast('Add at least one product'); return; }
+  if (ui.rate === 'c' && isOwner() && Object.keys(ui.orates).length) emit('cust_price', { cid: ui.shop, prices: Object.fromEntries(items.map(i => [i.pid, i.rate])) }, true);
   const total = sum(items, i => i.qty * i.rate), no = nextNo('order', me().username.toUpperCase().slice(0, 4)), online = isOnline();
   const id = uid();
   emit('order', { id, no, cid: ui.shop, items, total, rateType: ui.rate, note: ui.note });
   if (online) toast(`✅ Order ${no} saved — sent to owner`, 'ok');
-  ui.cart = {}; ui.shop = ''; ui.note = ''; ui.q = ''; go('today');
+  ui.cart = {}; ui.shop = ''; ui.note = ''; ui.q = ''; ui.orates = {}; go(isOwner() ? 'orders' : 'today');
   openSheet({ type: 'order', oid: id });
 }
 function setStatus(oid, status, extra) { emit('status', { oid, status, ...(extra || {}) }); }
+function saveCustPrices(cid) { const prices = {}; document.querySelectorAll('.rin.cp').forEach(i => prices[i.dataset.pid] = i.value === '' ? null : +i.value); emit('cust_price', { cid, prices, priceType: 'c' }); openSheet({ type: 'shop', cid }); toast('✅ Price list saved', 'ok'); }
+function approveAll() { const pp = pendingPays(view()); pp.forEach(p => emit('pay_review', { payId: p.id, ok: true }, true)); closeSheet(); toast(`✅ ${pp.length} recoveries approved`, 'ok'); }
 function review(payId, ok) { emit('pay_review', { payId, ok }); toast(ok ? '✅ Recovery approved — added to khata' : 'Recovery rejected', ok ? 'ok' : ''); if (ui.sheet) drawSheet(); }
 
 /* ---------- components ---------- */
@@ -280,20 +296,21 @@ function orderCard(o, S, actions) {
   ${o.short && o.short.length ? `<div class="muted red" style="margin:-4px 0 6px">⚠️ Short / not sent: ${o.short.map(i => esc((S.products[i.pid] || {}).name) + ' ×' + i.qty).join(', ')}</div>` : ''}
   <div class="row"><b style="font-size:16px">${rs(o.total)}</b><span onclick="event.stopPropagation()">${actions || ''}</span></div></div>`;
 }
+function rateSeg(key) { return `<div class="seg">${['w', 'r', 'c'].map(k => `<button class="${ui[key] === k ? 'act' : ''}" onclick="ui['${key}']='${k}';render()">${PT[k]}</button>`).join('')}</div>`; }
 function chips(opts) { return `<div class="chips">${opts.map(([k, l]) => `<button class="chip ${ui.filter === k ? 'act' : ''}" onclick="ui.filter='${k}';render()">${l}</button>`).join('')}</div>`; }
 const kpi = (l, v, cls, click) => `<div class="kpi ${click ? 'click' : ''}" ${click ? `onclick="${click}"` : ''}><div class="l">${l}</div><div class="v ${cls || ''}">${v}</div></div>`;
 const cashBal = S => sum(S.cash, c => c.type === 'in' ? c.amt : -c.amt);
 function approvalCard(p, S) {
   const c = S.customers[p.cid] || {};
   return `<div class="card"><div class="row"><div><b>${esc(c.name)}</b><div class="muted">${esc(p.method || 'Cash')} · by ${esc(p.byName)} · ${fmtD(p.ts)}${p.pend ? ' · ⏳' : ''}</div>${p.note && p.note !== 'Recovery' ? `<div class="muted">📝 ${esc(p.note)}</div>` : ''}</div><b style="white-space:nowrap">${rs(p.amt)}</b></div>
-  ${isOwner() ? `<div class="btns" style="margin-top:8px"><button class="btn sm" onclick="review('${p.id}',true)">✓ Approve</button><button class="btn sm red" onclick="review('${p.id}',false)">✕ Reject</button></div>` : '<div class="muted" style="color:#b45309">⏳ Waiting for owner approval</div>'}</div>`;
+  ${isOwner() ? `<div class="btns" style="margin-top:8px"><button class="btn sm" onclick="review('${p.id}',true)">✓ Approve</button><button class="btn sm red" onclick="review('${p.id}',false)">✕ Reject</button><button class="btn sm alt" onclick="pdfPayment('${p.id}')">📄</button></div>` : '<div class="muted" style="color:#b45309">⏳ Waiting for owner approval</div>'}</div>`;
 }
-function prodPicker(S, cart, rateKey, qtyFn, qKey) {
+function prodPicker(S, cart, rateKey, qtyFn, qKey, cust, overKey) {
   const prods = Object.values(S.products).sort((a, b) => a.name.localeCompare(b.name)); const qq = (ui[qKey] || '').toLowerCase();
   return `<input placeholder="Search product…" value="${esc(ui[qKey] || '')}" oninput="filterRows(this.value,'.prod.pk','${qKey}')" id="srch-${qKey}">
   <div class="card" style="padding:2px 14px;margin-top:8px">${prods.map(p => {
-    const q = cart[p.id] || 0; const rate = ui[rateKey] === 'w' ? p.w : p.r;
-    return `<div class="prod pk" data-n="${esc(p.name.toLowerCase())}" style="${p.name.toLowerCase().includes(qq) ? '' : 'display:none'}"><div><div class="pn">${esc(p.name)}</div><div class="muted">${rs(rate)} / ${esc(p.unit)} · <span class="${p.stock < 10 ? 'red' : ''}">stock ${p.stock}</span></div>${q > p.stock ? '<div class="muted red">More than available stock</div>' : ''}</div>
+    const q = cart[p.id] || 0; const mode = ui[rateKey]; const rate = rateOf(cust, p, mode, ui[overKey]);
+    return `<div class="prod pk" data-n="${esc(p.name.toLowerCase())}" style="${p.name.toLowerCase().includes(qq) ? '' : 'display:none'}"><div><div class="pn">${esc(p.name)}</div><div class="muted">${mode === 'c' ? `Rs <input class="rin" type="number" inputmode="numeric" value="${rate}" onchange="setOver('${overKey}','${p.id}',this.value)" onclick="event.stopPropagation()">` : rs(rate)} / ${esc(p.unit)} · <span class="${p.stock < 10 ? 'red' : ''}">stock ${p.stock}</span></div>${q > p.stock ? '<div class="muted red">More than available stock</div>' : ''}</div>
     <div class="step"><button onclick="${qtyFn}('${p.id}',-1)">−</button><span>${q}</span><button onclick="${qtyFn}('${p.id}',1)">+</button></div></div>`;
   }).join('') || empty('No products — add from Stock tab')}</div>`;
 }
@@ -312,31 +329,31 @@ const V = {
   },
   new(S) {
     const shops = Object.values(S.customers).filter(c => c.type !== 'retail').sort((a, b) => a.name.localeCompare(b.name));
-    const items = Object.entries(ui.cart).filter(([pid]) => S.products[pid]);
-    const tot = sum(items, ([pid, q]) => { const p = S.products[pid]; return q * (ui.rate === 'w' ? p.w : p.r); });
-    const n = sum(items, x => x[1]); const c = S.customers[ui.shop];
+    const c = S.customers[ui.shop]; const items = Object.entries(ui.cart).filter(([pid]) => S.products[pid]);
+    const tot = sum(items, ([pid, q]) => q * rateOf(c, S.products[pid], ui.rate, ui.orates));
+    const n = sum(items, x => x[1]);
     return `<label style="margin-top:0">Shop / Customer</label>
-    <select onchange="ui.shop=this.value;render()"><option value="">Select shop…</option>${shops.map(c => `<option value="${c.id}" ${ui.shop === c.id ? 'selected' : ''}>${esc(c.name)} — ${esc(c.area)}</option>`).join('')}</select>
+    <select onchange="pickShop(this.value)"><option value="">Select shop…</option>${shops.map(c => `<option value="${c.id}" ${ui.shop === c.id ? 'selected' : ''}>${esc(c.name)} — ${esc(c.area)}</option>`).join('')}</select>
     <div class="row" style="margin-top:6px"><span class="muted">${c ? `Previous balance: <b class="${c.bal > 0 ? 'red' : ''}">${rs(c.bal)}</b>` : ''}</span><button class="btn sm alt" onclick="openSheet({type:'addshop',fromOrder:1})">+ New shop</button></div>
-    <label>Rate list</label><div class="seg"><button class="${ui.rate === 'w' ? 'act' : ''}" onclick="ui.rate='w';render()">Wholesale</button><button class="${ui.rate === 'r' ? 'act' : ''}" onclick="ui.rate='r';render()">Retail</button></div>
-    <label>Products</label>${prodPicker(S, ui.cart, 'rate', 'qty', 'q')}
+    <label>Rate list ${c ? `<span class="muted" style="font-weight:400">· this shop gets <b>${PT[c.priceType || 'w']}</b></span>` : ''}</label>${rateSeg('rate')}
+    <label>Products</label>${prodPicker(S, ui.cart, 'rate', 'qty', 'q', c, 'orates')}
     <label>Note (optional)</label><input id="onote" placeholder="e.g. deliver before 2pm" value="${esc(ui.note)}" oninput="ui.note=this.value">
     <div style="height:80px"></div>
-    <div class="cartbar"><div><div class="muted" style="margin:0">${n} unit(s) · ${ui.rate === 'w' ? 'Wholesale' : 'Retail'}</div><b style="font-size:18px">${rs(tot)}</b></div>
+    <div class="cartbar"><div><div class="muted" style="margin:0">${n} unit(s) · ${PT[ui.rate]}</div><b style="font-size:18px">${rs(tot)}</b></div>
     <button class="btn" onclick="saveOrder()" ${n ? '' : 'disabled'}>Save Order</button></div>`;
   },
   counter(S) {
     const custs = Object.values(S.customers).sort((a, b) => (a.type === 'retail' ? 0 : 1) - (b.type === 'retail' ? 0 : 1) || a.name.localeCompare(b.name));
-    const items = Object.entries(ui.ccart).filter(([pid]) => S.products[pid]);
-    const tot = sum(items, ([pid, q]) => { const p = S.products[pid]; return q * (ui.crate === 'w' ? p.w : p.r); });
-    const n = sum(items, x => x[1]); const c = S.customers[ui.ccid];
+    const c = S.customers[ui.ccid]; const items = Object.entries(ui.ccart).filter(([pid]) => S.products[pid]);
+    const tot = sum(items, ([pid, q]) => q * rateOf(c, S.products[pid], ui.crate, ui.ccr));
+    const n = sum(items, x => x[1]);
     const today = Object.values(S.counters).filter(x => isToday(x.ts)).sort((a, b) => b.ts - a.ts);
     return `<div class="kpis">${kpi("Today's counter sales", rs(sum(today, x => x.total)))}${kpi('On udhaar today', rs(sum(today, x => x.total - x.paid)), 'red')}</div>
     <label>Customer</label>
-    <select onchange="ui.ccid=this.value;render()"><option value="">🚶 Walk-in (cash only)</option>${custs.map(c => `<option value="${c.id}" ${ui.ccid === c.id ? 'selected' : ''}>${c.type === 'retail' ? '🛒' : '🏪'} ${esc(c.name)} — bal ${n0(c.bal)}</option>`).join('')}</select>
+    <select onchange="pickCC(this.value)"><option value="">🚶 Walk-in (cash only)</option>${custs.map(c => `<option value="${c.id}" ${ui.ccid === c.id ? 'selected' : ''}>${c.type === 'retail' ? '🛒' : '🏪'} ${esc(c.name)} — bal ${n0(c.bal)}</option>`).join('')}</select>
     <div class="row" style="margin-top:6px"><span class="muted">${c ? `Khata balance: <b class="${c.bal > 0 ? 'red' : ''}">${rs(c.bal)}</b>` : 'Choose a customer to sell on udhaar'}</span><button class="btn sm alt" onclick="openSheet({type:'addshop',fromCounter:1})">+ New customer</button></div>
-    <label>Rate</label><div class="seg"><button class="${ui.crate === 'r' ? 'act' : ''}" onclick="ui.crate='r';render()">Retail</button><button class="${ui.crate === 'w' ? 'act' : ''}" onclick="ui.crate='w';render()">Wholesale</button></div>
-    <label>Products</label>${prodPicker(S, ui.ccart, 'crate', 'cqty', 'cq')}
+    <label>Rate ${c ? `<span class="muted" style="font-weight:400">· this customer gets <b>${PT[c.priceType || 'w']}</b></span>` : ''}</label>${rateSeg('crate')}
+    <label>Products</label>${prodPicker(S, ui.ccart, 'crate', 'cqty', 'cq', c, 'ccr')}
     <h2>Today's counter sales</h2>${today.map(x => `<div class="card row click" onclick="pdfCounter('${x.id}')"><div><b>${esc(x.no || 'Sale')}</b> · ${esc(x.custName)}${x.pend ? ' <span class="pendtag">⏳</span>' : ''}<div class="muted">${fmtT(x.ts)} · paid ${rs(x.paid)}${x.total > x.paid ? ` · <span class="red">udhaar ${rs(x.total - x.paid)}</span>` : ''}</div></div><div style="text-align:right"><b>${rs(x.total)}</b><div class="muted">📄 receipt</div></div></div>`).join('') || empty('No counter sales today')}
     <div style="height:80px"></div>
     <div class="cartbar"><div><div class="muted" style="margin:0">${n} unit(s) · ${c ? esc(c.name) : 'Walk-in'}</div><b style="font-size:18px">${rs(tot)}</b></div>
@@ -348,7 +365,7 @@ const V = {
       const sups = Object.values(S.suppliers).sort((a, b) => b.bal - a.bal);
       return chips([['shop', 'Shops'], ['retail', 'Counter customers'], ['sup', 'Suppliers']]) +
       `<div class="card row"><div><div class="muted" style="margin:0">Total payable to suppliers</div><div style="font-size:21px;font-weight:700" class="red">${rs(sum(sups, s => s.bal))}</div><div class="muted">${sups.length} suppliers</div></div><div class="btns" style="flex-direction:column"><button class="btn sm alt" onclick="openSheet({type:'addsup'})">+ Supplier</button><button class="btn sm alt" onclick="pdfPayables()">📄 PDF</button></div></div>
-      ${sups.map(s => `<div class="card row click" onclick="openSheet({type:'sup',sid:'${s.id}'})"><div><b>${esc(s.name)}</b>${s.pend ? ' <span class="pendtag">⏳</span>' : ''}<div class="muted">${esc(s.city || '')} · ${esc(s.phone || '')}</div></div><div style="text-align:right"><b class="${s.bal > 0 ? 'red' : 'green'}">${rs(s.bal)}</b><div class="muted">${s.bal > 0 ? 'to pay' : s.bal < 0 ? 'advance' : 'clear'}</div></div></div>`).join('') || empty('No suppliers yet')}`;
+      ${sups.map(s => `<div class="card row click" onclick="openSheet({type:'sup',sid:'${s.id}'})"><div><b>${esc(s.name)}</b>${s.pend ? ' <span class="pendtag">⏳</span>' : ''}<div class="muted">${esc(s.city || '')} · ${esc(s.phone || '')}</div></div><div style="text-align:right"><b class="${s.bal > 0 ? 'red' : 'green'}">${rs(Math.abs(s.bal))}</b><div class="muted">${s.bal > 0 ? 'to pay' : s.bal < 0 ? 'advance paid' : 'clear'}</div></div></div>`).join('') || empty('No suppliers yet')}`;
     }
     let list = Object.values(S.customers);
     if (own) list = list.filter(c => ui.filter === 'retail' ? c.type === 'retail' : c.type !== 'retail');
@@ -359,7 +376,7 @@ const V = {
     ${own && pp.length ? `<div class="warn click" onclick="go('dash')">💰 ${pp.length} recovery payment(s) waiting for your approval →</div>` : ''}
     <input placeholder="Search name or area…" oninput="filterRows(this.value,'.li')" style="margin:10px 0">
     ${list.map(c => `<div class="card row click li" data-n="${esc((c.name + ' ' + c.area).toLowerCase())}" onclick="openSheet({type:'shop',cid:'${c.id}'})">
-      <div><b>${esc(c.name)}</b>${c.pend ? ' <span class="pendtag">⏳</span>' : ''}<div class="muted">${esc(c.area)} · ${esc(c.phone)}</div>${c.awaiting ? `<div class="muted" style="color:#b45309">⏳ ${rs(c.awaiting)} recovery awaiting approval</div>` : ''}</div>
+      <div><b>${esc(c.name)}</b> <span class="ptag ${c.priceType || 'w'}">${PT[c.priceType || 'w']}</span>${c.pend ? ' <span class="pendtag">⏳</span>' : ''}<div class="muted">${esc(c.area)} · ${esc(c.phone)}</div>${c.awaiting ? `<div class="muted" style="color:#b45309">⏳ ${rs(c.awaiting)} recovery awaiting approval</div>` : ''}</div>
       <div style="text-align:right"><b class="${c.bal > 0 ? 'red' : 'green'}">${rs(c.bal)}</b><div class="muted">${c.bal > 0 ? 'to receive' : c.bal < 0 ? 'advance' : 'clear'}</div></div></div>`).join('') || empty('No customers yet')}`;
   },
   mine(S) {
@@ -370,7 +387,7 @@ const V = {
   stock(S) {
     const ps = Object.values(S.products).sort((a, b) => a.stock - b.stock); const own = isOwner();
     return `<div class="kpis">${kpi('Products', ps.length)}${own ? kpi('Stock value (cost)', rs(sum(ps, p => p.stock * p.cost))) : kpi('Low stock', ps.filter(p => p.stock < 10).length, 'red')}</div>
-    ${own ? `<div class="btns" style="margin-top:12px"><button class="btn" onclick="openPurchase()">+ Purchase (Stock In)</button><button class="btn alt" onclick="openSheet({type:'addprod'})">+ Product</button><button class="btn alt" onclick="pdfStock()">📄 PDF</button></div>` : ''}
+    ${own ? `<div class="btns" style="margin-top:12px"><button class="btn" onclick="openPurchase()">+ Purchase (Stock In)</button><button class="btn alt" onclick="openSheet({type:'addprod'})">+ Product</button><button class="btn alt" onclick="pdfStock()">📄 Stock PDF</button><button class="btn alt" onclick="openSheet({type:'reports'})">📦 Monthly product report</button></div>` : ''}
     <h2>Current stock${own ? ' <span class="muted" style="text-transform:none">(tap a product for history / adjust)</span>' : ''}</h2><div class="card" style="padding:2px 14px">${ps.map(p => `<div class="prod ${own ? 'click' : ''}" ${own ? `onclick="openSheet({type:'prod',pid:'${p.id}'})"` : ''}><div><div class="pn">${esc(p.name)}${p.pend ? ' <span class="pendtag">⏳</span>' : ''}</div><div class="muted">W ${rs(p.w)} · R ${rs(p.r)}${own ? ' · Cost ' + rs(p.cost) : ''}</div></div>
       <div style="text-align:right"><b class="${p.stock < 10 ? 'red' : ''}" style="font-size:17px">${p.stock}</b><div class="muted">${esc(p.unit)}${p.stock < 10 ? ' · LOW' : ''}</div></div></div>`).join('') || empty('No products')}</div>
     ${own ? `<h2>Recent purchases</h2>${Object.values(S.purchases).sort((a, b) => b.ts - a.ts).slice(0, 15).map(pu => `<div class="card row click" onclick="pdfPurchase('${pu.id}')"><div><b>${esc(pu.no)}</b> · ${esc(pu.supName)}${pu.pend ? ' <span class="pendtag">⏳</span>' : ''}<div class="muted">${dshort(pu.ts)} · ${pu.items.map(i => esc((S.products[i.pid] || {}).name) + ' ×' + i.qty).join(', ')}</div></div><div style="text-align:right"><b>${rs(pu.total)}</b><div class="muted">${pu.paid < pu.total ? `<span class="red">due ${rs(pu.total - pu.paid)}</span>` : 'paid'}</div></div></div>`).join('') || empty('No purchases yet')}` : ''}`;
@@ -383,7 +400,7 @@ const V = {
     const todayOut = sum(S.cash.filter(c => c.type === 'out' && isToday(c.ts)), c => c.amt);
     const top = Object.values(S.customers).filter(c => c.bal > 0).sort((a, b) => b.bal - a.bal).slice(0, 5);
     const pp = pendingPays(S); const payable = sum(Object.values(S.suppliers), s => s.bal);
-    return `${pp.length ? `<h2 style="margin-top:0">💰 Recovery to approve (${pp.length})</h2>${pp.map(p => approvalCard(p, S)).join('')}` : ''}
+    return `${pp.length ? `<div class="row" style="margin-bottom:8px"><h2 style="margin:0">💰 Recovery to approve (${pp.length})</h2>${pp.length > 1 ? `<button class="btn sm" onclick="openSheet({type:'approveall'})">✓ Approve all · ${rs(sum(pp, p => p.amt))}</button>` : ''}</div>${pp.map(p => approvalCard(p, S)).join('')}` : ''}
     <div class="kpis">${kpi("Today's sales", rs(sum(ts, s => s.amt)))}${kpi('Gross profit today', rs(sum(ts, s => s.profit)), 'green')}${kpi('Cash in hand', rs(cashBal(S)))}${kpi("Today's expenses", rs(todayOut))}${kpi('Receivable (udhaar)', rs(recv), 'red', "go('shops')")}${kpi('Payable to suppliers', rs(payable), 'red', "go('shops');ui.filter='sup';render()")}${kpi('Orders to dispatch', pend.length + ' →', pend.length ? 'red' : '', "go('orders')")}${kpi('Low stock items', low.length, low.length ? 'red' : '', "go('stock')")}</div>
     <button class="btn block alt" style="margin-top:12px" onclick="openSheet({type:'reports'})">📄 Reports & PDFs</button>
     <h2>Sales — last 7 days</h2><div class="card"><div class="bars">${days.map(x => `<div class="bw"><span class="bv">${x.v ? Math.round(x.v / 1000) + 'k' : ''}</span><div class="bar" style="height:${x.v / mx * 85}%"></div><span class="bl">${x.l}</span></div>`).join('')}</div></div>
@@ -410,7 +427,7 @@ const V = {
     const list = [...S.cash].sort((a, b) => b.ts - a.ts).slice(0, 150); let lastDay = null;
     return `<div class="card"><div class="muted" style="margin:0">Cash in hand</div><div style="font-size:24px;font-weight:700">${rs(cashBal(S))}</div>
     <div class="row" style="margin-top:8px"><span class="green">▲ In today ${rs(tin)}</span><span class="red">▼ Out today ${rs(tout)}</span></div></div>
-    <div class="btns"><button class="btn alt" onclick="openSheet({type:'expense'})">+ Expense</button><button class="btn alt" onclick="openPurchase()">+ Purchase</button><button class="btn alt" onclick="openSheet({type:'suppay'})">+ Pay Supplier</button><button class="btn alt" onclick="openSheet({type:'reports'})">📄 PDF</button></div>
+    <div class="btns"><button class="btn alt" onclick="openSheet({type:'expense'})">+ Expense</button><button class="btn alt" onclick="openPurchase()">+ Purchase</button><button class="btn alt" onclick="openSheet({type:'suppay'})">+ Pay Supplier / Advance</button><button class="btn alt" onclick="openSheet({type:'reports'})">📄 PDF</button></div>
     ${list.map(c => {
       const d = sod(c.ts); const hd = d !== lastDay ? `<h2>${isToday(c.ts) ? 'Today' : new Date(c.ts).toLocaleDateString('en-PK', { weekday: 'short', day: 'numeric', month: 'short' })}</h2>` : ''; lastDay = d;
       const click = c.ref ? `onclick="${c.ref.t === 'counter' ? 'pdfCounter' : 'pdfPurchase'}('${c.ref.id}')"` : '';
@@ -426,7 +443,8 @@ function sh(title, body) { return `<div class="ov" onclick="if(event.target===th
 const val = id => (document.getElementById(id) || {}).value || '';
 const num = id => parseFloat(val(id)) || 0;
 const methodSel = id => `<select id="${id}">${METHODS.map(m => `<option>${m}</option>`).join('')}</select>`;
-const dateRange = () => `<div class="kpis"><div><label>From</label><input id="rf" type="date" value="${isoDay(now() - 29 * 864e5)}"></div><div><label>To</label><input id="rt" type="date" value="${isoDay(now())}"></div></div>`;
+const monthStart = () => { const d = new Date(); return new Date(d.getFullYear(), d.getMonth(), 1).getTime(); };
+const dateRange = () => `<div class="kpis"><div><label>From</label><input id="rf" type="date" value="${isoDay(monthStart())}"></div><div><label>To</label><input id="rt" type="date" value="${isoDay(now())}"></div></div>`;
 const rangeVals = () => [parseDay(val('rf') || isoDay(now())), eod(parseDay(val('rt') || isoDay(now())))];
 function openPurchase(sid) { ui.plines = []; ui.psid = sid || ''; ui.ppaid = null; openSheet({ type: 'purchase' }); }
 
@@ -445,7 +463,12 @@ function drawSheet() {
     case 'settings': { const st = S.settings; h = sh('🏢 Business details', `<p class="muted">Shown at the top of every bill, statement and report PDF.</p>
       <label>Business name</label><input id="bn" value="${esc(st.bizName)}"><label>Address</label><input id="ba" value="${esc(st.address)}">
       <label>Phone</label><input id="bp" value="${esc(st.phone)}"><label>Footer note on PDFs</label><input id="bf" value="${esc(st.footer)}">
-      <button class="btn block" style="margin-top:14px" onclick="emit('settings',{bizName:val('bn'),address:val('ba'),phone:val('bp'),footer:val('bf')});closeSheet();toast('✅ Saved','ok')">Save</button>`); break; }
+      <label>Printer paper for bills, slips & receipts</label><select id="bpp">${[['t80', 'Thermal 80mm (3 inch)'], ['t58', 'Thermal 58mm (2 inch)'], ['a4', 'A4 / normal printer']].map(([k, l]) => `<option value="${k}" ${(st.paper || 't80') === k ? 'selected' : ''}>${l}</option>`).join('')}</select><p class="muted">Reports (summary, stock, cash book, product report) are always A4.</p>
+      <button class="btn block" style="margin-top:14px" onclick="emit('settings',{bizName:val('bn'),address:val('ba'),phone:val('bp'),footer:val('bf'),paper:val('bpp')});closeSheet();toast('✅ Saved','ok')">Save</button>`); break; }
+    case 'approveall': { const pp = pendingPays(S);
+      h = sh('✓ Approve all recoveries', `<p>${pp.length} payment(s), total <b>${rs(sum(pp, p => p.amt))}</b>, will be added to the customers' khata and the cash book.</p>
+      <table>${pp.map(p => `<tr><td>${esc((S.customers[p.cid] || {}).name)}<div class="muted">by ${esc(p.byName)} · ${fmtD(p.ts)}</div></td><td class="r"><b>${n0(p.amt)}</b></td></tr>`).join('')}</table>
+      <button class="btn block" style="margin-top:14px" onclick="approveAll()">Approve all ${pp.length}</button>`); break; }
     case 'reset': h = sh('🗑 Reset data', `<p>This deletes <b>all</b> orders, khata, cash book, stock and suppliers on the server and on every phone. Users and PINs are kept.</p>
       <label>Type RESET to confirm</label><input id="rc" autocapitalize="characters">
       <div class="btns" style="margin-top:12px"><button class="btn red" onclick="doReset(false)">Start empty (go live)</button><button class="btn alt" onclick="doReset(true)">Reload demo data</button></div>`); break;
@@ -465,7 +488,9 @@ function drawSheet() {
     }
     case 'pin': h = sh('Set new PIN', `<label>New PIN (4–8 digits)</label><input id="np1" inputmode="numeric"><button class="btn block" style="margin-top:14px" onclick="savePin('${s.uid}')">Save PIN</button>`); break;
     case 'reports': h = sh('📄 Reports & PDFs', `<p class="muted">Pick dates, then tap a report. Every PDF can be printed, downloaded or shared on WhatsApp.</p>${dateRange()}
+      <div class="btns" style="margin-top:8px"><button class="btn sm alt" onclick="document.getElementById('rf').value=isoDay(monthStart());document.getElementById('rt').value=isoDay(now())">This month</button><button class="btn sm alt" onclick="const d=new Date();document.getElementById('rf').value=isoDay(new Date(d.getFullYear(),d.getMonth()-1,1));document.getElementById('rt').value=isoDay(new Date(d.getFullYear(),d.getMonth(),0))">Last month</button><button class="btn sm alt" onclick="document.getElementById('rf').value=isoDay(now());document.getElementById('rt').value=isoDay(now())">Today</button></div>
       <div class="rgrid">
+        <button class="btn" onclick="pdfProducts(...rangeVals())">📦 Product report<br><span>bought from whom · sold to whom · buy & sell price</span></button>
         <button class="btn alt" onclick="pdfSummary(...rangeVals())">📊 Business summary<br><span>sales, profit, cash</span></button>
         <button class="btn alt" onclick="pdfOrders(...rangeVals())">🧾 Orders report<br><span>by order taker</span></button>
         <button class="btn alt" onclick="pdfCashbook(...rangeVals())">💵 Cash book<br><span>all in / out</span></button>
@@ -482,7 +507,7 @@ function drawSheet() {
         <a class="btn block" href="${f.url}" target="_blank" rel="noopener" style="text-align:center;text-decoration:none">🖨️ Open / Print</a>
         <a class="btn block alt" href="${f.url}" download="${esc(f.name)}" style="text-align:center;text-decoration:none">⬇️ Download</a>
         ${canShare ? `<button class="btn block alt" onclick="sharePdf()">📤 Share (WhatsApp, etc.)</button>` : ''}
-      </div><p class="muted" style="margin-top:10px">To print from a phone: Open → share/menu → Print.</p>`); break; }
+      </div>${f.canSwitch ? `<label>Paper</label><div class="seg">${[['t80', 'Thermal 80mm'], ['t58', 'Thermal 58mm'], ['a4', 'A4']].map(([k, l]) => `<button class="${f.paper === k ? 'act' : ''}" onclick="regen('${k}')">${l}</button>`).join('')}</div>` : ''}<p class="muted" style="margin-top:10px">${f.thermal ? 'Thermal printer: Share → your printer app (e.g. RawBT / Bluetooth printer app), or Open → Print.' : 'To print from a phone: Open → share/menu → Print.'}</p>`); break; }
     case 'order': {
       const o = S.orders[s.oid]; if (!o) { closeSheet(); return; } const c = S.customers[o.cid] || {};
       const r = role();
@@ -529,7 +554,8 @@ function drawSheet() {
       const c = S.customers[s.cid]; if (!c) { closeSheet(); return; }
       const led = custLedger(S, c.id); const rows = [...led].reverse();
       const aw = Object.values(S.pays).filter(p => p.cid === c.id && p.status === 'pending');
-      h = sh(esc(c.name), `<div class="muted">${c.type === 'retail' ? '🛒 Counter customer' : '🏪 Shop'} · ${esc(c.area)} · ${esc(c.phone)}</div>
+      h = sh(esc(c.name), `<div class="muted">${c.type === 'retail' ? '🛒 Counter customer' : '🏪 Shop'} · ${esc(c.area)} · ${esc(c.phone)} · price: <b>${PT[c.priceType || 'w']}</b></div>
+      ${isOwner() ? `<div class="btns" style="margin-top:6px"><button class="btn sm alt" onclick="openSheet({type:'editcust',cid:'${c.id}'})">✏️ Edit / price type</button><button class="btn sm alt" onclick="openSheet({type:'prices',cid:'${c.id}'})">💲 Custom price list${Object.keys(c.prices || {}).length ? ' (' + Object.keys(c.prices).length + ')' : ''}</button></div>` : ''}
       <div class="card row" style="margin-top:10px;background:#f9fafb"><span>Balance</span><b class="${c.bal > 0 ? 'red' : 'green'}" style="font-size:20px">${rs(c.bal)}</b></div>
       <div class="btns"><button class="btn" onclick="openSheet({type:'pay',cid:'${c.id}'})">Receive Payment</button>${role() === 'taker' && c.type !== 'retail' ? `<button class="btn alt" onclick="ui.shop='${c.id}';closeSheet();go('new')">New Order</button>` : ''}${isOwner() ? `<button class="btn alt" onclick="ui.ccid='${c.id}';closeSheet();go('counter')">Counter sale</button>` : ''}</div>
       ${aw.length ? `<h2>Awaiting owner approval</h2>${aw.map(p => approvalCard(p, S)).join('')}` : ''}
@@ -540,6 +566,16 @@ function drawSheet() {
         return `<tr><td class="muted" style="white-space:nowrap">${dshort(l.ts)}</td><td>${esc(l.desc)}${l.pend ? ' ⏳' : ''}${sub ? `<div class="muted">${sub.map(i => esc((S.products[i.pid] || {}).name) + ' ×' + i.qty).join(', ')}</div>` : ''}</td><td class="r">${l.dr ? n0(l.dr) : ''}</td><td class="r green">${l.cr ? n0(l.cr) : ''}</td><td class="r"><b>${n0(l.run)}</b></td></tr>`; }).join('') || '<tr><td colspan="5" class="muted">No entries yet</td></tr>'}</table>`);
       break;
     }
+    case 'editcust': { const c = S.customers[s.cid];
+      h = sh('✏️ Edit ' + esc(c.name), `<label>Name</label><input id="ecn" value="${esc(c.name)}"><label>Area</label><input id="eca" value="${esc(c.area)}"><label>Phone</label><input id="ecp" value="${esc(c.phone)}">
+      <label>Type</label><select id="ect"><option value="shop" ${c.type !== 'retail' ? 'selected' : ''}>🏪 Shop (distribution)</option><option value="retail" ${c.type === 'retail' ? 'selected' : ''}>🛒 Counter customer</option></select>
+      <label>Price given to this customer</label><select id="ecpt">${['w', 'r', 'c'].map(k => `<option value="${k}" ${(c.priceType || 'w') === k ? 'selected' : ''}>${PT[k]}${k === 'c' ? ' (own price list)' : ''}</option>`).join('')}</select>
+      <p class="muted">Orders and counter sales for this customer start with this price. Custom uses the customer's own price list (set with 💲); products without a custom price use wholesale.</p>
+      <button class="btn block" style="margin-top:10px" onclick="emit('customer_upd',{id:'${c.id}',name:val('ecn'),area:val('eca'),phone:val('ecp'),type:val('ect'),priceType:val('ecpt')});openSheet({type:'shop',cid:'${c.id}'});toast('✅ Saved','ok')">Save</button>`); break; }
+    case 'prices': { const c = S.customers[s.cid]; const ps = Object.values(S.products).sort((a, b) => a.name.localeCompare(b.name));
+      h = sh('💲 Price list — ' + esc(c.name), `<p class="muted">Leave blank to use wholesale. Saving also sets this customer to <b>Custom</b> price.</p>
+      <table><tr><th>Product</th><th class="r">Wholesale</th><th class="r">Retail</th><th class="r">Custom</th></tr>${ps.map(p => `<tr><td>${esc(p.name)}</td><td class="r muted">${n0(p.w)}</td><td class="r muted">${n0(p.r)}</td><td class="r"><input class="rin cp" data-pid="${p.id}" type="number" inputmode="numeric" value="${c.prices && c.prices[p.id] != null ? c.prices[p.id] : ''}" placeholder="${p.w}"></td></tr>`).join('')}</table>
+      <button class="btn block" style="margin-top:14px" onclick="saveCustPrices('${c.id}')">Save price list</button>`); break; }
     case 'stmt': { const name = s.kind === 'c' ? (S.customers[s.id] || {}).name : (S.suppliers[s.id] || {}).name;
       h = sh('📄 Statement — ' + esc(name), `${dateRange()}<div class="btns" style="margin-top:8px"><button class="btn sm alt" onclick="document.getElementById('rf').value='2000-01-01'">All time</button><button class="btn sm alt" onclick="document.getElementById('rf').value=isoDay(new Date(new Date().getFullYear(),new Date().getMonth(),1))">This month</button></div>
       <button class="btn block" style="margin-top:14px" onclick="${s.kind === 'c' ? 'pdfCustStmt' : 'pdfSupStmt'}('${s.id}',...rangeVals())">Create PDF</button>`); break; }
@@ -557,11 +593,12 @@ function drawSheet() {
       h = sh('Add Customer', `<label>Type</label><select id="st"><option value="shop" ${t === 'shop' ? 'selected' : ''}>🏪 Shop (distribution)</option><option value="retail" ${t === 'retail' ? 'selected' : ''}>🛒 Counter customer</option></select>
       <label>Name</label><input id="sn" placeholder="e.g. Lal Chand Karyana">
       <label>Area</label><input id="sa" placeholder="e.g. Latifabad No. 8"><label>Phone</label><input id="sp" type="tel" placeholder="03xx-xxxxxxx">
+      <label>Price given</label><select id="spt"><option value="w" ${t === 'shop' ? 'selected' : ''}>Wholesale</option><option value="r" ${t === 'retail' ? 'selected' : ''}>Retail</option><option value="c">Custom (set price list later)</option></select>
       <label>Opening balance (old udhaar)</label><input id="sob" type="number" placeholder="0">
       <button class="btn block" style="margin-top:14px" onclick="confirmShop(${s.fromOrder ? 1 : 0},${s.fromCounter ? 1 : 0})">Save</button>`); break; }
     case 'checkout': {
-      const items = Object.entries(ui.ccart).filter(([pid]) => S.products[pid]).map(([pid, qty]) => { const p = S.products[pid]; return { pid, qty, rate: ui.crate === 'w' ? p.w : p.r }; });
-      const tot = sum(items, i => i.qty * i.rate); const c = S.customers[ui.ccid];
+      const c = S.customers[ui.ccid]; const items = Object.entries(ui.ccart).filter(([pid]) => S.products[pid]).map(([pid, qty]) => ({ pid, qty, rate: rateOf(c, S.products[pid], ui.crate, ui.ccr) }));
+      const tot = sum(items, i => i.qty * i.rate);
       h = sh('🛒 Checkout', `<div class="row"><b>${c ? esc(c.name) : '🚶 Walk-in customer'}</b><b style="font-size:20px">${rs(tot)}</b></div>
       ${c ? `<div class="muted">Previous khata balance ${rs(c.bal)}</div>` : ''}
       <table style="margin-top:8px">${items.map(i => `<tr><td>${esc(S.products[i.pid].name)}</td><td class="r">${i.qty} × ${n0(i.rate)}</td><td class="r">${n0(i.qty * i.rate)}</td></tr>`).join('')}</table>
@@ -572,6 +609,8 @@ function drawSheet() {
       <button class="btn block" style="margin-top:14px" id="ckbtn" onclick="confirmCounter()">Save Sale</button>`);
       setTimeout(() => ckUpd(tot, c ? 1 : 0)); break;
     }
+    case 'paydone': h = sh('✅ Payment saved', `<div class="card" style="background:#f0fdf4"><div class="row"><b>${esc((S.customers[s.cid] || {}).name)}</b><b>${rs(s.amt)}</b></div>${role() === 'taker' ? '<div class="muted">Waiting for owner approval</div>' : ''}</div>
+      <div class="btns"><button class="btn" onclick="pdfPayment('${s.pid}')">📄 Payment receipt</button><button class="btn alt" onclick="openSheet({type:'shop',cid:'${s.cid}'})">Back to khata</button></div>`); break;
     case 'cdone': { const x = S.counters[s.id];
       h = sh('✅ Sale saved', `<div class="card" style="background:#f0fdf4"><div class="row"><b>${esc(x ? x.no : '')}</b><b>${rs(x ? x.total : 0)}</b></div><div class="muted">${esc(x ? x.custName : '')} · paid ${rs(x ? x.paid : 0)}${x && x.total > x.paid ? ` · <span class="red">${rs(x.total - x.paid)} added to khata</span>` : ''}</div></div>
       <div class="btns"><button class="btn" onclick="pdfCounter('${s.id}')">📄 Receipt PDF</button><button class="btn alt" onclick="closeSheet()">New sale</button></div>`); break; }
@@ -581,19 +620,20 @@ function drawSheet() {
     case 'purchase': {
       const ps = Object.values(S.products).sort((a, b) => a.name.localeCompare(b.name)); const sups = Object.values(S.suppliers).sort((a, b) => a.name.localeCompare(b.name));
       window._costs = Object.fromEntries(ps.map(p => [p.id, p.cost]));
-      const tot = sum(ui.plines, l => l.qty * l.cost); const sp = S.suppliers[ui.psid]; const paid = ui.ppaid == null ? tot : ui.ppaid;
+      const tot = sum(ui.plines, l => l.qty * l.cost); const sp = S.suppliers[ui.psid]; const adv = sp && sp.bal < 0 ? -sp.bal : 0; const paid = ui.ppaid == null ? Math.max(0, tot - adv) : ui.ppaid;
       h = sh('🏭 Purchase / Stock In', `<label style="margin-top:0">Supplier</label>
-      <select onchange="ui.psid=this.value;ui.sheet._keep=1;drawSheet()"><option value="">Cash purchase (no supplier account)</option>${sups.map(x => `<option value="${x.id}" ${ui.psid === x.id ? 'selected' : ''}>${esc(x.name)} — payable ${n0(x.bal)}</option>`).join('')}</select>
-      <div class="row" style="margin-top:6px"><span class="muted">${sp ? `Currently payable: <b class="red">${rs(sp.bal)}</b>` : ''}</span><button class="btn sm alt" onclick="openSheet({type:'addsup',fromPurchase:1})">+ New supplier</button></div>
+      <select onchange="ui.psid=this.value;ui.ppaid=null;ui.sheet._keep=1;drawSheet()"><option value="">Cash purchase (no supplier account)</option>${sups.map(x => `<option value="${x.id}" ${ui.psid === x.id ? 'selected' : ''}>${esc(x.name)} — ${x.bal < 0 ? 'advance ' + n0(-x.bal) : 'payable ' + n0(x.bal)}</option>`).join('')}</select>
+      <div class="row" style="margin-top:6px"><span class="muted">${sp ? (adv ? `Advance with supplier: <b class="green">${rs(adv)}</b>` : `Currently payable: <b class="red">${rs(sp.bal)}</b>`) : ''}</span><button class="btn sm alt" onclick="openSheet({type:'addsup',fromPurchase:1})">+ New supplier</button></div>
       <h2>Items</h2>${ui.plines.map((l, i) => `<div class="row" style="padding:6px 0;border-bottom:1px solid #f1f2f4"><span>${esc((S.products[l.pid] || {}).name)}<div class="muted">${l.qty} × ${n0(l.cost)}</div></span><span><b>${n0(l.qty * l.cost)}</b> <button class="x" onclick="ui.plines.splice(${i},1);ui.sheet._keep=1;drawSheet()">✕</button></span></div>`).join('') || '<div class="muted">No items yet — add below</div>'}
       <div class="card" style="margin-top:10px;background:#f9fafb"><label style="margin-top:0">Product</label><select id="lp2" onchange="document.getElementById('lc').value=_costs[this.value]">${ps.map(p => `<option value="${p.id}">${esc(p.name)} (stock ${p.stock})</option>`).join('')}</select>
       <div class="kpis"><div><label>Qty</label><input id="lq" type="number" inputmode="numeric" placeholder="e.g. 50"></div><div><label>Cost / unit</label><input id="lc" type="number" value="${ps[0] ? ps[0].cost : ''}"></div></div>
       <button class="btn sm alt" style="margin-top:10px" onclick="addPLine()">+ Add item</button></div>
       <div class="row" style="margin-top:12px"><b>Total</b><b style="font-size:19px">${rs(tot)}</b></div>
-      <label>Paid now</label><input id="ppd" type="number" inputmode="numeric" value="${paid}" oninput="ui.ppaid=parseFloat(this.value)||0">
-      ${sp ? `<div class="muted">Unpaid amount is added to ${esc(sp.name)}'s account.</div>` : '<div class="muted">Without a supplier, the full amount must be paid now.</div>'}
+      <label>Paid now</label><input id="ppd" type="number" inputmode="numeric" value="${paid}" onchange="ui.ppaid=parseFloat(this.value)||0;ui.sheet._keep=1;drawSheet()">
+      ${sp ? `<div class="muted">${adv ? `${rs(Math.min(adv, tot))} of the advance is adjusted automatically. ` : ''}Any unpaid amount is added to ${esc(sp.name)}'s account.</div>` : '<div class="muted">Without a supplier, the full amount must be paid now.</div>'}
+      ${sp && tot ? `<div class="card" style="background:#f9fafb;margin-top:8px"><div class="row"><span>Supplier balance after saving</span><b>${(() => { const after = sp.bal + tot - paid; return after > 0 ? `<span class="red">${rs(after)} payable</span>` : after < 0 ? `<span class="green">${rs(-after)} advance left</span>` : 'Clear'; })()}</b></div></div>` : ''}
       <label>Method</label>${methodSel('pmeth')}
-      <button class="btn block" style="margin-top:14px" onclick="confirmPurchase()" ${ui.plines.length ? '' : 'disabled'}>Save Purchase</button>`);
+      <button class="btn block" style="margin-top:14px" onclick="confirmPurchase()">Save Purchase</button>`);
       break;
     }
     case 'addsup': h = sh('Add Supplier', `<label>Name</label><input id="sun" placeholder="e.g. Sindh Ghee Mills"><label>City</label><input id="suc" placeholder="Hyderabad"><label>Phone</label><input id="sup" type="tel">
@@ -603,15 +643,15 @@ function drawSheet() {
       const sp = S.suppliers[s.sid]; if (!sp) { closeSheet(); return; }
       const led = supLedger(S, sp.id); const rows = [...led].reverse();
       h = sh('🏭 ' + esc(sp.name), `<div class="muted">${esc(sp.city || '')} · ${esc(sp.phone || '')}</div>
-      <div class="card row" style="margin-top:10px;background:#f9fafb"><span>Payable</span><b class="${sp.bal > 0 ? 'red' : 'green'}" style="font-size:20px">${rs(sp.bal)}</b></div>
-      <div class="btns"><button class="btn" onclick="openSheet({type:'suppay',sid:'${sp.id}'})">Pay Supplier</button><button class="btn alt" onclick="openPurchase('${sp.id}')">+ Purchase</button><button class="btn alt" onclick="openSheet({type:'stmt',kind:'s',id:'${sp.id}'})">📄 Statement PDF</button></div>
+      <div class="card row" style="margin-top:10px;background:#f9fafb"><span>${sp.bal < 0 ? 'Advance paid (they owe goods)' : 'Payable'}</span><b class="${sp.bal > 0 ? 'red' : 'green'}" style="font-size:20px">${rs(Math.abs(sp.bal))}</b></div>
+      <div class="btns"><button class="btn" onclick="openSheet({type:'suppay',sid:'${sp.id}'})">Pay / Advance</button><button class="btn alt" onclick="openPurchase('${sp.id}')">+ Purchase</button><button class="btn alt" onclick="openSheet({type:'stmt',kind:'s',id:'${sp.id}'})">📄 Statement PDF</button></div>
       <div class="kpis" style="margin-top:10px">${kpi('Total purchased', rs(sum(led, l => l.bill)))}${kpi('Total paid', rs(sum(led, l => l.paid)), 'green')}</div>
       <h2>Supplier account</h2><table><tr><th>Date</th><th>Detail</th><th class="r">Purchase</th><th class="r">Paid</th><th class="r">Bal</th></tr>
       ${rows.map(l => { const pu = l.puid && S.purchases[l.puid]; return `<tr><td class="muted" style="white-space:nowrap">${dshort(l.ts)}</td><td>${esc(l.desc)}${l.pend ? ' ⏳' : ''}${pu ? `<div class="muted">${pu.items.map(i => esc((S.products[i.pid] || {}).name) + ' ×' + i.qty).join(', ')}</div>` : ''}</td><td class="r">${l.bill ? n0(l.bill) : ''}</td><td class="r green">${l.paid ? n0(l.paid) : ''}</td><td class="r"><b>${n0(l.run)}</b></td></tr>`; }).join('') || '<tr><td colspan="5" class="muted">No entries yet</td></tr>'}</table>`);
       break;
     }
     case 'suppay': { const sups = Object.values(S.suppliers).sort((a, b) => b.bal - a.bal);
-      h = sh('Pay Supplier', `<label style="margin-top:0">Supplier</label><select id="ssid">${sups.map(x => `<option value="${x.id}" ${s.sid === x.id ? 'selected' : ''}>${esc(x.name)} — payable ${n0(x.bal)}</option>`).join('')}</select>
+      h = sh('Pay Supplier / Advance', `<p class="muted" style="margin-top:0">Paying more than what you owe (or paying before goods arrive) is kept as an <b>advance</b> and adjusted automatically in the next purchase.</p><label style="margin-top:0">Supplier</label><select id="ssid">${sups.map(x => `<option value="${x.id}" ${s.sid === x.id ? 'selected' : ''}>${esc(x.name)} — ${x.bal < 0 ? 'advance ' + n0(-x.bal) : 'payable ' + n0(x.bal)}</option>`).join('')}</select>
       <label>Amount</label><input id="samt" type="number" inputmode="numeric"><label>Method</label>${methodSel('smeth')}<label>Note</label><input id="snote" placeholder="Payment">
       <button class="btn block" style="margin-top:14px" onclick="confirmSupPay()" ${sups.length ? '' : 'disabled'}>Save Payment</button>`); break; }
     case 'prod': {
@@ -677,19 +717,19 @@ function addPLine() { const pid = val('lp2'), q = num('lq'), c = num('lc'); if (
 function confirmDeliver(oid) {
   const o = view().orders[oid]; const amt = num('amt'); const m = val('meth');
   setStatus(oid, 'delivered');
-  if (amt > 0) emit('payment', { cid: o.cid, amt, method: m, note: 'Collected on delivery ' + o.no }, true);
+  if (amt > 0) emit('payment', { cid: o.cid, oid: o.id, amt, method: m, note: 'Collected on delivery ' + o.no }, true);
   closeSheet(); toast(`✅ ${o.no} delivered${amt ? ' · ' + rs(amt) + ' collected' : ' · on credit'}`, 'ok');
 }
 function confirmPay(cid) {
   const amt = num('amt'); if (amt <= 0) { toast('Enter an amount'); return; }
-  emit('payment', { cid, amt, method: val('meth'), note: val('pnote') || 'Recovery' });
-  toast(role() === 'taker' ? `📨 ${rs(amt)} sent to owner for approval` : `✅ ${rs(amt)} received`, 'ok'); openSheet({ type: 'shop', cid });
+  const pid = emit('payment', { cid, amt, method: val('meth'), note: val('pnote') || 'Recovery' });
+  toast(role() === 'taker' ? `📨 ${rs(amt)} sent to owner for approval` : `✅ ${rs(amt)} received`, 'ok'); openSheet({ type: 'paydone', cid, pid, amt });
 }
 function confirmShop(fromOrder, fromCounter) {
   const name = val('sn').trim(); if (!name) { toast('Enter name'); return; } const id = uid(); const ob = num('sob');
-  emit('customer', { id, name, area: val('sa') || (val('st') === 'retail' ? 'Counter customer' : ''), phone: val('sp'), type: val('st') }); if (ob) emit('opening', { cid: id, amt: ob }, true);
+  emit('customer', { id, name, area: val('sa') || (val('st') === 'retail' ? 'Counter customer' : ''), phone: val('sp'), type: val('st'), priceType: val('spt') || 'w' }); if (ob) emit('opening', { cid: id, amt: ob }, true);
   toast('✅ Customer added', 'ok');
-  if (fromOrder) ui.shop = id; if (fromCounter) ui.ccid = id; closeSheet(); render();
+  if (fromOrder) { ui.shop = id; ui.rate = val('spt') || 'w'; } if (fromCounter) { ui.ccid = id; ui.crate = val('spt') || 'w'; } closeSheet(); render();
 }
 function confirmSup(fromPurchase) {
   const name = val('sun').trim(); if (!name) { toast('Enter supplier name'); return; } const id = uid(); const ob = num('suo');
@@ -697,9 +737,12 @@ function confirmSup(fromPurchase) {
   toast('✅ Supplier added', 'ok'); if (fromPurchase) { ui.psid = id; openSheet({ type: 'purchase' }); } else closeSheet();
 }
 function confirmPurchase() {
+  if (num('lq') > 0) { ui.plines.push({ pid: val('lp2'), qty: num('lq'), cost: num('lc') }); document.getElementById('lq').value = ''; } // typed but not added yet
+  if (!ui.plines.length) { toast('Add at least one item (product + qty)'); return; }
   const tot = sum(ui.plines, l => l.qty * l.cost); let paid = num('ppd'); const sid = ui.psid;
+  if (ui.ppaid == null) { const sp0 = view().suppliers[sid]; const adv0 = sp0 && sp0.bal < 0 ? -sp0.bal : 0; paid = Math.max(0, tot - adv0); }
   if (!sid && paid < tot) { toast('Choose a supplier to buy on credit, or pay in full'); return; }
-  if (paid > tot) paid = tot;
+  if (!sid && paid > tot) paid = tot;
   const id = uid(); const no = nextNo('purchase', 'PO');
   emit('purchase', { id, no, sid, items: ui.plines, total: tot, paid, method: val('pmeth'), note: '' });
   ui.plines = []; closeSheet(); toast(`✅ ${no} saved — stock updated${tot > paid ? ` · ${rs(tot - paid)} payable` : ''}`, 'ok');
@@ -711,12 +754,13 @@ function confirmProd() {
   emit('product', { id: uid(), name, unit: val('nu') || 'pcs', cost: num('nc'), w: num('nw'), r: num('nr'), stock: num('ns') }); closeSheet(); toast('✅ Product added', 'ok');
 }
 function confirmCounter() {
-  const S = view(); const items = Object.entries(ui.ccart).filter(([pid]) => S.products[pid]).map(([pid, qty]) => { const p = S.products[pid]; return { pid, qty, rate: ui.crate === 'w' ? p.w : p.r }; });
+  const S = view(); const cc = S.customers[ui.ccid]; const items = Object.entries(ui.ccart).filter(([pid]) => S.products[pid]).map(([pid, qty]) => ({ pid, qty, rate: rateOf(cc, S.products[pid], ui.crate, ui.ccr) }));
   if (!items.length) return; const total = sum(items, i => i.qty * i.rate); let paid = Math.min(num('cpaid'), total);
   if (!ui.ccid && paid < total) { toast('Walk-in sale must be paid in full'); return; }
   const id = uid(); const no = nextNo('counter', 'CS');
   emit('counter', { id, no, cid: ui.ccid, cust: ui.ccid ? '' : 'Walk-in', items, total, paid, method: val('cmeth') });
-  ui.ccart = {}; ui.ccid = ''; ui.cq = ''; render(); openSheet({ type: 'cdone', id });
+  if (ui.crate === 'c' && ui.ccid && Object.keys(ui.ccr).length) emit('cust_price', { cid: ui.ccid, prices: Object.fromEntries(items.map(i => [i.pid, i.rate])) }, true);
+  ui.ccart = {}; ui.ccid = ''; ui.cq = ''; ui.ccr = {}; ui.crate = 'r'; render(); openSheet({ type: 'cdone', id });
 }
 async function doReset(demo) {
   if (val('rc').trim().toUpperCase() !== 'RESET') { toast('Type RESET to confirm'); return; }
@@ -752,11 +796,104 @@ async function makePdf(title, fname, draw, landscape) {
     draw(doc, S);
     const W = doc.internal.pageSize.getWidth(), H = doc.internal.pageSize.getHeight(); const np = doc.getNumberOfPages();
     for (let i = 1; i <= np; i++) { doc.setPage(i); doc.setFontSize(7.5); doc.setTextColor(140); doc.text(`${S.settings.footer || ''}  ·  Printed ${new Date().toLocaleString('en-PK')}  ·  TradeBook`, 14, H - 8); doc.text(`Page ${i} of ${np}`, W - 14, H - 8, { align: 'right' }); }
-    const blob = doc.output('blob');
-    if (ui.pdf && ui.pdf.url) URL.revokeObjectURL(ui.pdf.url);
-    ui.pdf = { blob, title, name: fname.replace(/[^\w.-]+/g, '_') + '.pdf', url: URL.createObjectURL(blob) };
-    openSheet({ type: 'pdf' });
+    finishPdf(doc, title, fname, false);
   } catch (e) { console.error(e); toast('❌ PDF failed: ' + e.message); }
+}
+function finishPdf(doc, title, fname, thermal) {
+  const blob = doc.output('blob');
+  if (ui.pdf && ui.pdf.url) URL.revokeObjectURL(ui.pdf.url);
+  ui.pdf = { blob, title, name: fname.replace(/[^\w.-]+/g, '_') + '.pdf', url: URL.createObjectURL(blob), thermal, canSwitch: ui.genHasThermal, paper: thermal ? paperMode() : 'a4' };
+  ui.genHasThermal = false;
+  openSheet({ type: 'pdf' });
+}
+const paperMode = () => ui.paperOverride || view().settings.paper || 't80';
+function gen(fn, hasThermal) { ui.lastGen = fn; ui.genHasThermal = hasThermal; }
+function regen(paper) { ui.paperOverride = paper; const f = ui.lastGen; if (f) f(); ui.paperOverride = null; }
+/* ---- thermal receipt printer (80mm / 58mm roll) ---- */
+async function makeThermal(title, fname, draw) {
+  try {
+    await loadPdfLib(); const S = view(); const W = paperMode() === 't58' ? 58 : 80;
+    const run = H => { const doc = new window.jspdf.jsPDF({ unit: 'mm', format: [W, H], orientation: 'p' }); const T = tpr(doc, W, S); draw(T, S); T.foot(); return { doc, y: T.y }; };
+    const first = run(3000); const { doc } = run(Math.max(50, Math.ceil(first.y + 8)));
+    finishPdf(doc, title, fname, true);
+  } catch (e) { console.error(e); toast('❌ PDF failed: ' + e.message); }
+}
+function tpr(doc, W, S) {
+  const m = W === 58 ? 2.5 : 4, iw = W - 2 * m, base = W === 58 ? 7.5 : 9; const lh = z => z * 0.43;
+  const T = { doc, y: m, base };
+  T.font = (z, b) => { doc.setFont('helvetica', b ? 'bold' : 'normal'); doc.setFontSize(z); doc.setTextColor(0); };
+  T.center = (t, z, b) => { z = z || base; T.font(z, b); doc.splitTextToSize(String(t ?? ''), iw).forEach(l => { T.y += lh(z); doc.text(l, W / 2, T.y, { align: 'center' }); T.y += 0.9; }); };
+  T.text = (t, z, b) => { z = z || base; T.font(z, b); doc.splitTextToSize(String(t ?? ''), iw).forEach(l => { T.y += lh(z); doc.text(l, m, T.y); T.y += 0.9; }); };
+  T.lr = (l, r, z, b) => { z = z || base; T.font(z, b); const rw = doc.getTextWidth(String(r)); doc.splitTextToSize(String(l ?? ''), Math.max(15, iw - rw - 2)).forEach((x, i) => { T.y += lh(z); doc.text(x, m, T.y); if (!i) doc.text(String(r), W - m, T.y, { align: 'right' }); T.y += 0.9; }); };
+  T.hr = dash => { T.y += 1.2; doc.setDrawColor(0); doc.setLineWidth(0.25); if (dash) doc.setLineDashPattern([0.8, 0.8], 0); doc.line(m, T.y, W - m, T.y); doc.setLineDashPattern([], 0); T.y += 1.4; };
+  T.gap = g => { T.y += g || 2; };
+  T.item = (name, sub, amt) => { T.text(name, base, true); T.lr('   ' + sub, amt, base - 0.5); };
+  T.head = (title, sub) => { const st = S.settings; T.center(st.bizName, base + 4, true); if (st.address) T.center(st.address, base - 1); if (st.phone) T.center('Ph: ' + st.phone, base - 1); T.hr(); T.center(title, base + 1.5, true); if (sub) T.center(sub, base - 1); T.hr(true); };
+  T.sign = labels => { labels.forEach(l => { T.y += 9; doc.setLineWidth(0.2); doc.line(m, T.y, m + iw * 0.65, T.y); T.font(base - 1.5); doc.text(l, m, T.y + 3); T.y += 3.5; }); };
+  T.foot = () => { T.hr(true); if (S.settings.footer) T.center(S.settings.footer, base - 1); T.center('Printed ' + new Date().toLocaleString('en-PK'), base - 2.5); T.gap(3); };
+  return T;
+}
+function orderDues(S, o) { // previous balance + received for an order's bill
+  const L = custLedger(S, o.cid); const c = S.customers[o.cid] || {};
+  if (o.status === 'pending' || o.status === 'cancelled') return { prev: c.bal, recv: 0, billed: false };
+  const idx = L.findIndex(l => l.oid === o.id); return { prev: idx > 0 ? L[idx - 1].run : 0, recv: billRecv(L, o), billed: true };
+}
+function billRecv(L, o) { return sum(L.filter(l => l.cr && (l.payOid ? l.payOid === o.id : (l.desc === 'Collected on delivery ' + o.no || l.desc.startsWith('Collected on delivery ' + o.no + ' ')))), l => l.cr); }
+/* ---- document routers: thermal or A4 ---- */
+function pdfOrderSlip(oid) { gen(() => pdfOrderSlip(oid), true); if (paperMode() === 'a4') return a4OrderSlip(oid); const o0 = view().orders[oid]; if (!o0) return;
+  makeThermal('Order slip ' + o0.no, 'Order_' + o0.no, (T, S) => { const o = S.orders[oid]; const c = S.customers[o.cid] || {}; const d = orderDues(S, o);
+    T.head('ORDER SLIP', `${o.no}  ·  ${dstr(o.ts)} ${fmtT(o.ts)}`); T.lr('Customer', c.name, 0, true); T.lr('Area', c.area); if (c.phone) T.lr('Phone', c.phone); T.lr('Order taker', o.byName); T.lr('Rate', PT[o.rateType] || 'Wholesale'); T.hr(true);
+    o.items.forEach(i => T.item(pname(S, i.pid), `${i.qty} ${punit(S, i.pid)} x ${n0(i.rate)}`, n0(i.qty * i.rate))); T.hr();
+    T.lr('This order', PDFRS(o.total), T.base + 1, true); T.lr('Previous dues', PDFRS(d.prev)); T.lr('Total with dues', PDFRS(d.prev + o.total), T.base + 1.5, true);
+    if (o.note) { T.hr(true); T.text('Note: ' + o.note); } T.sign(['Order taker', 'Shopkeeper']); }); }
+function pdfInvoice(oid) { gen(() => pdfInvoice(oid), true); if (paperMode() === 'a4') return a4Invoice(oid); const o0 = view().orders[oid]; if (!o0) return;
+  makeThermal('Bill ' + o0.no, 'Bill_' + o0.no, (T, S) => { const o = S.orders[oid]; const c = S.customers[o.cid] || {}; const d = orderDues(S, o);
+    T.head('SALES INVOICE / BILL', `${o.no}  ·  ${dstr(o.dispatchedAt || o.ts)}`); T.lr('Bill to', c.name, 0, true); T.lr('Area', c.area); if (c.phone) T.lr('Phone', c.phone); T.lr('Booked by', o.byName); if (o.vehicle) T.lr('Vehicle', o.vehicle); T.hr(true);
+    o.items.forEach(i => T.item(pname(S, i.pid), `${i.qty} ${punit(S, i.pid)} x ${n0(i.rate)}`, n0(i.qty * i.rate))); T.hr();
+    T.lr('Bill total', PDFRS(o.total), T.base + 1.5, true);
+    if (o.short && o.short.length) { T.text('Not supplied (not billed): ' + o.short.map(i => pname(S, i.pid) + ' x' + i.qty).join(', '), T.base - 1); }
+    T.hr(true); T.lr('Previous balance', PDFRS(d.prev)); T.lr('This bill', PDFRS(o.total)); T.lr('Total due', PDFRS(d.prev + o.total), 0, true); T.lr('Received', PDFRS(d.recv)); T.lr('Balance', PDFRS(d.prev + o.total - d.recv), T.base + 1.5, true);
+    T.sign(['Received goods (sign)']); }); }
+function pdfDispatchSlip(oid) { gen(() => pdfDispatchSlip(oid), true); if (paperMode() === 'a4') return a4DispatchSlip(oid); const o0 = view().orders[oid]; if (!o0) return;
+  makeThermal('Dispatch slip ' + o0.no, 'Dispatch_slip_' + o0.no, (T, S) => { const o = S.orders[oid]; const c = S.customers[o.cid] || {}; const ord = o.ordered || o.items;
+    T.head('DISPATCH SLIP', `${o.no}  ·  ${dstr(o.dispatchedAt || now())} ${fmtT(o.dispatchedAt || now())}`); T.lr('Deliver to', c.name, 0, true); T.lr('Area', c.area); if (c.phone) T.lr('Phone', c.phone); T.lr('Vehicle', o.vehicle || '-'); T.hr(true);
+    T.lr('ITEM', 'SENT', T.base - 1, true);
+    ord.forEach(i => { const sent = (o.items.find(x => x.pid === i.pid) || {}).qty || 0; T.lr(pname(S, i.pid), `${sent} ${punit(S, i.pid)}`, 0, true); if (sent !== i.qty) T.text(`   ordered ${i.qty} · SHORT ${i.qty - sent}`, T.base - 1); }); T.hr();
+    T.lr('Total units sent', String(sum(o.items, i => i.qty)), 0, true); T.lr('Bill amount', PDFRS(o.total));
+    if (o.short && o.short.length) T.text('Short / not sent: ' + o.short.map(i => pname(S, i.pid) + ' x' + i.qty).join(', ') + ' (not billed)', T.base - 1);
+    T.sign(['Loaded by', 'Driver', 'Received by (shop)']); }); }
+function pdfCounter(id) { gen(() => pdfCounter(id), true); if (paperMode() === 'a4') return a4Counter(id); const x0 = view().counters[id]; if (!x0) { toast('Sync first'); return; }
+  makeThermal('Receipt ' + (x0.no || ''), 'Receipt_' + (x0.no || id), (T, S) => { const x = S.counters[id]; const c = x.cid && S.customers[x.cid];
+    T.head('CASH MEMO', `${x.no || ''}  ·  ${dstr(x.ts)} ${fmtT(x.ts)}`); T.lr('Customer', x.custName, 0, true); T.hr(true);
+    x.items.forEach(i => T.item(pname(S, i.pid), `${i.qty} x ${n0(i.rate)}`, n0(i.qty * i.rate))); T.hr();
+    T.lr('TOTAL', PDFRS(x.total), T.base + 2, true); T.lr('Paid (' + (x.method || 'Cash') + ')', PDFRS(x.paid)); if (x.total > x.paid) T.lr('On udhaar', PDFRS(x.total - x.paid), 0, true); if (c) T.lr('Khata balance now', PDFRS(c.bal), 0, true); }); }
+function pdfPurchase(id) { gen(() => pdfPurchase(id), true); if (paperMode() === 'a4') return a4Purchase(id); const p0 = view().purchases[id]; if (!p0) return;
+  makeThermal('Purchase ' + p0.no, 'Purchase_' + p0.no, (T, S) => { const p = S.purchases[id]; const s = p.sid && S.suppliers[p.sid];
+    T.head('PURCHASE VOUCHER', `${p.no}  ·  ${dstr(p.ts)}`); T.lr('Supplier', p.supName, 0, true); if (s && s.city) T.lr('City', s.city); T.hr(true);
+    p.items.forEach(i => T.item(pname(S, i.pid), `${i.qty} ${punit(S, i.pid)} x ${n0(i.cost)}`, n0(i.qty * i.cost))); T.hr();
+    T.lr('Total', PDFRS(p.total), T.base + 1.5, true); T.lr('Paid now (' + (p.method || 'Cash') + ')', PDFRS(p.paid)); if (s) T.lr(s.bal < 0 ? 'Supplier advance left' : 'Supplier balance (payable)', PDFRS(Math.abs(s.bal)), 0, true); T.sign(['Received by']); }); }
+function pdfPayment(id) { gen(() => pdfPayment(id), true); const r0 = view().payRec[id]; if (!r0) { toast('Receipt not found'); return; }
+  const draw = (T, S) => { const r = S.payRec[id]; const c = S.customers[r.cid] || {}; const st = S.pays[id];
+    T.head('PAYMENT RECEIPT', `${dstr(r.ts)} ${fmtT(r.ts)}`); T.lr('Received from', c.name, 0, true); T.lr('Area', c.area); T.hr(true);
+    T.lr('AMOUNT', PDFRS(r.amt), T.base + 3, true); T.lr('Method', r.method || 'Cash'); if (r.note) T.lr('For', r.note); T.lr('Received by', r.byName);
+    if (st && st.status === 'pending') T.text('Status: pending owner approval', T.base - 0.5, true); else if (st && st.status === 'rejected') T.text('Status: REJECTED', T.base, true);
+    else T.lr('Balance after payment', PDFRS(c.bal), 0, true); T.sign(['Signature']); };
+  if (paperMode() === 'a4') return makePdf('Payment receipt', 'Payment_' + isoDay(r0.ts), (doc, S) => { const r = S.payRec[id]; const c = S.customers[r.cid] || {}; const st = S.pays[id];
+    let y = pHead(doc, S, 'PAYMENT RECEIPT', dstr(r.ts) + ' ' + fmtT(r.ts)); y = pKV(doc, y, [['Received from', c.name], ['Area', c.area], ['Amount', PDFRS(r.amt)], ['Method', r.method || 'Cash'], ['For', r.note || ''], ['Received by', r.byName], ['Status', st ? st.status : 'received']]);
+    if (!st || st.status === 'approved') pTotals(doc, y, [['Balance after payment', PDFRS(c.bal), true]]); pSign(doc, y + 10, 'Received by', 'Customer'); });
+  makeThermal('Payment receipt', 'Payment_' + isoDay(r0.ts), draw); }
+function pdfCustStmt(cid, from, to) { gen(() => pdfCustStmt(cid, from, to), true); if (paperMode() === 'a4') return a4CustStmt(cid, from, to); const c0 = view().customers[cid]; makeThermal('Statement — ' + c0.name, 'Statement_' + c0.name, (T, S) => tStmt(T, S, 'c', cid, from, to)); }
+function pdfSupStmt(sid, from, to) { gen(() => pdfSupStmt(sid, from, to), true); if (paperMode() === 'a4') return a4SupStmt(sid, from, to); const s0 = view().suppliers[sid]; makeThermal('Supplier statement — ' + s0.name, 'Supplier_' + s0.name, (T, S) => tStmt(T, S, 's', sid, from, to)); }
+function tStmt(T, S, kind, id, from, to) {
+  const isC = kind === 'c'; const ent = isC ? S.customers[id] : S.suppliers[id]; const L = isC ? custLedger(S, id) : supLedger(S, id);
+  const before = L.filter(l => l.ts < from); const open = before.length ? before[before.length - 1].run : 0; const rows = L.filter(l => l.ts >= from && l.ts <= to);
+  const shownFrom = L.length && from < L[0].ts ? L[0].ts : from;
+  T.head(isC ? 'CUSTOMER STATEMENT' : 'SUPPLIER STATEMENT', `${dstr(shownFrom)} - ${dstr(to)}`); T.lr(isC ? 'Customer' : 'Supplier', ent.name, 0, true); if (ent.area || ent.city) T.lr(isC ? 'Area' : 'City', ent.area || ent.city); T.hr(true);
+  T.lr('Opening balance', n0(open), 0, true);
+  rows.forEach(l => { const a = isC ? l.dr - l.cr : l.bill - l.paid; T.lr(dshort(l.ts) + '  ' + l.desc, (a >= 0 ? '+' : '-') + n0(Math.abs(a)), T.base - 0.5); T.lr('', 'bal ' + n0(l.run), T.base - 1.5); });
+  T.hr(); const close = rows.length ? rows[rows.length - 1].run : open;
+  T.lr(isC ? 'Billed' : 'Purchased', n0(sum(rows, l => isC ? l.dr : l.bill))); T.lr(isC ? 'Received' : 'Paid', n0(sum(rows, l => isC ? l.cr : l.paid)));
+  T.lr(isC ? (close < 0 ? 'Advance' : 'BALANCE DUE') : (close < 0 ? 'ADVANCE WITH SUPPLIER' : 'BALANCE PAYABLE'), PDFRS(Math.abs(close)), T.base + 1.5, true);
 }
 async function sharePdf() {
   const f = ui.pdf; try { await navigator.share({ files: [new File([f.blob], f.name, { type: 'application/pdf' })], title: f.title }); } catch (e) { if (e.name !== 'AbortError') toast('Sharing not available — use Download'); }
@@ -788,7 +925,7 @@ function pTotals(doc, y, rows) {
   rows.forEach(([k, v, b], i) => { doc.setFont('helvetica', b ? 'bold' : 'normal'); doc.setFontSize(b ? 10.5 : 9.5); doc.text(k, W - 80, y + i * 6); doc.text(v, W - 14, y + i * 6, { align: 'right' }); });
   doc.setFont('helvetica', 'normal'); return y + rows.length * 6 + 4;
 }
-function pH2(doc, y, t) { if (y > 260) { doc.addPage(); y = 20; } doc.setFont('helvetica', 'bold'); doc.setFontSize(10.5); doc.setTextColor(15, 118, 110); doc.text(t, 14, y); doc.setFont('helvetica', 'normal'); doc.setTextColor(25); return y + 3; }
+function pH2(doc, y, t) { if (y > doc.internal.pageSize.getHeight() - 38) { doc.addPage(); y = 20; } doc.setFont('helvetica', 'bold'); doc.setFontSize(10.5); doc.setTextColor(15, 118, 110); doc.text(t, 14, y); doc.setFont('helvetica', 'normal'); doc.setTextColor(25); return y + 3; }
 function pSign(doc, y, a, b) {
   const W = doc.internal.pageSize.getWidth(); if (y > 262) { doc.addPage(); y = 30; } y += 14; doc.setDrawColor(150); doc.setLineWidth(0.3); doc.setFontSize(8.5); doc.setTextColor(110);
   doc.line(14, y, 74, y); doc.text(a || 'Prepared by', 14, y + 4.5); doc.line(W - 74, y, W - 14, y); doc.text(b || 'Received by (sign & stamp)', W - 74, y + 4.5); doc.setTextColor(25);
@@ -796,18 +933,19 @@ function pSign(doc, y, a, b) {
 const pname = (S, pid) => (S.products[pid] || {}).name || '?';
 const punit = (S, pid) => (S.products[pid] || {}).unit || '';
 
-function pdfOrderSlip(oid) {
+function a4OrderSlip(oid) {
   const S0 = view(); const o0 = S0.orders[oid]; if (!o0) return;
   makePdf('Order slip ' + o0.no, 'Order_' + o0.no, (doc, S) => {
     const o = S.orders[oid]; const c = S.customers[o.cid] || {};
     let y = pHead(doc, S, 'ORDER SLIP', `${o.no}  ·  ${dstr(o.ts)} ${fmtT(o.ts)}`);
     y = pKV(doc, y, [['Customer', c.name], ['Area', c.area], ['Phone', c.phone], ['Order taker', o.byName], ['Status', STATUS[o.status]], ['Rate', o.rateType === 'r' ? 'Retail' : 'Wholesale']]);
     y = pTable(doc, y, ['#', 'Item', 'Unit', 'Qty', 'Rate', 'Amount'], o.items.map((i, k) => [k + 1, pname(S, i.pid), punit(S, i.pid), i.qty, n0(i.rate), n0(i.qty * i.rate)]), { right: [3, 4, 5], foot: ['', 'Total', '', sum(o.items, i => i.qty), '', PDFRS(o.total)] });
+    const d = orderDues(S, o); y = pTotals(doc, y, [['This order', PDFRS(o.total), true], ['Previous dues', PDFRS(d.prev)], ['Total with dues', PDFRS(d.prev + o.total), true]]);
     if (o.note) { doc.setFontSize(9); doc.text('Note: ' + o.note, 14, y); y += 6; }
     pSign(doc, y, 'Order taker', 'Shopkeeper');
   });
 }
-function pdfDispatchSlip(oid) {
+function a4DispatchSlip(oid) {
   const S0 = view(); const o0 = S0.orders[oid]; if (!o0) return;
   makePdf('Dispatch slip ' + o0.no, 'Dispatch_slip_' + o0.no, (doc, S) => {
     const o = S.orders[oid]; const c = S.customers[o.cid] || {}; const ord = o.ordered || o.items;
@@ -822,24 +960,22 @@ function pdfDispatchSlip(oid) {
     [['Loaded by', 14], ['Driver', 80], ['Received by (shop)', 146]].forEach(([t, x]) => { doc.line(x, y, x + 50, y); doc.text(t, x, y + 4.5); });
   });
 }
-function pdfInvoice(oid) {
+function a4Invoice(oid) {
   const S0 = view(); const o0 = S0.orders[oid]; if (!o0) return;
   makePdf('Bill ' + o0.no, 'Bill_' + o0.no, (doc, S) => {
     const o = S.orders[oid]; const c = S.customers[o.cid] || {};
-    const L = custLedger(S, o.cid); const idx = L.findIndex(l => l.oid === o.id); const prev = idx > 0 ? L[idx - 1].run : 0;
-    const recv = sum(L.filter(l => l.cr && l.desc.includes(o.no)), l => l.cr);
+    const dd = orderDues(S, o); const prev = dd.prev, recv = dd.recv;
     let y = pHead(doc, S, 'SALES INVOICE / BILL', `${o.no}  ·  ${dstr(o.dispatchedAt || o.ts)}`);
     pKV(doc, y, [['Bill to', c.name], ['Area', c.area], ['Phone', c.phone]]);
     y = pKV(doc, y, [['Order date', dstr(o.ts)], ['Booked by', o.byName], ['Vehicle', o.vehicle || '-']], 110);
     y = pTable(doc, y + 2, ['#', 'Item', 'Unit', 'Qty', 'Rate', 'Amount'], o.items.map((i, k) => [k + 1, pname(S, i.pid), punit(S, i.pid), i.qty, n0(i.rate), n0(i.qty * i.rate)]), { right: [3, 4, 5], foot: ['', 'Bill total', '', sum(o.items, i => i.qty), '', PDFRS(o.total)] });
     if (o.short && o.short.length) { doc.setFontSize(8.5); doc.setTextColor(170, 40, 40); doc.text('Not supplied (short, not billed): ' + o.short.map(i => pname(S, i.pid) + ' x' + i.qty).join(', '), 14, y - 2, { maxWidth: 180 }); doc.setTextColor(25); y += 5; }
     const after = prev + o.total - recv; const rows = [['Previous balance', PDFRS(prev)], ['This bill', PDFRS(o.total)], ['Total due', PDFRS(prev + o.total), true], ['Received on delivery', PDFRS(recv)], ['Balance after this bill', PDFRS(after), true]];
-    if (Math.round(after) !== Math.round(c.bal)) rows.push(['Current balance (today)', PDFRS(c.bal)]);
     y = pTotals(doc, y, rows);
     pSign(doc, y, 'For ' + (S.settings.bizName || ''), 'Received goods (sign & stamp)');
   });
 }
-function pdfCounter(id) {
+function a4Counter(id) {
   const S0 = view(); const x0 = S0.counters[id]; if (!x0) { toast('Sync first'); return; }
   makePdf('Receipt ' + (x0.no || ''), 'Receipt_' + (x0.no || id), (doc, S) => {
     const x = S.counters[id]; const c = x.cid && S.customers[x.cid];
@@ -852,7 +988,7 @@ function pdfCounter(id) {
     pTotals(doc, y, rows);
   });
 }
-function pdfPurchase(id) {
+function a4Purchase(id) {
   const S0 = view(); const p0 = S0.purchases[id]; if (!p0) return;
   makePdf('Purchase ' + p0.no, 'Purchase_' + p0.no, (doc, S) => {
     const p = S.purchases[id]; const s = p.sid && S.suppliers[p.sid];
@@ -885,8 +1021,8 @@ function stmtPage(doc, S, kind, id, from, to) {
   y = pTotals(doc, y, [['Opening balance', PDFRS(open)], [isC ? 'Billed in period' : 'Purchased in period', PDFRS(tA)], [isC ? 'Received in period' : 'Paid in period', PDFRS(tB)], [isC ? 'Balance due' : 'Balance payable', PDFRS(close), true]]);
   if (isC && ent.awaiting) { doc.setFontSize(8.5); doc.setTextColor(150, 90, 0); doc.text(`Note: ${PDFRS(ent.awaiting)} recovery is awaiting approval and is not included above.`, 14, y); doc.setTextColor(25); }
 }
-function pdfCustStmt(cid, from, to) { const c = view().customers[cid]; makePdf('Statement — ' + c.name, 'Statement_' + c.name + '_' + isoDay(to), (doc, S) => stmtPage(doc, S, 'c', cid, from, to)); }
-function pdfSupStmt(sid, from, to) { const s = view().suppliers[sid]; makePdf('Supplier statement — ' + s.name, 'Supplier_' + s.name + '_' + isoDay(to), (doc, S) => stmtPage(doc, S, 's', sid, from, to)); }
+function a4CustStmt(cid, from, to) { const c = view().customers[cid]; makePdf('Statement — ' + c.name, 'Statement_' + c.name + '_' + isoDay(to), (doc, S) => stmtPage(doc, S, 'c', cid, from, to)); }
+function a4SupStmt(sid, from, to) { const s = view().suppliers[sid]; makePdf('Supplier statement — ' + s.name, 'Supplier_' + s.name + '_' + isoDay(to), (doc, S) => stmtPage(doc, S, 's', sid, from, to)); }
 function pdfAllStatements(kind, from, to) {
   const S0 = view(); const ids = kind === 'c' ? Object.values(S0.customers).filter(c => c.bal !== 0 || S0.ledger.some(l => l.cid === c.id && l.ts >= from && l.ts <= to)).map(c => c.id) : Object.values(S0.suppliers).map(s => s.id);
   if (!ids.length) { toast('Nothing to print'); return; }
@@ -990,6 +1126,37 @@ function pdfSummary(from, to) {
   });
 }
 
+function pdfProducts(from, to) {
+  makePdf('Product report', 'Product_report_' + isoDay(from) + '_to_' + isoDay(to), (doc, S) => {
+    const inR = t => t >= from && t <= to;
+    const ps = Object.values(S.products).sort((a, b) => a.name.localeCompare(b.name));
+    const rows = ps.map(p => {
+      const mv = S.moves.filter(m => m.pid === p.id); const inMv = mv.filter(m => inR(m.ts));
+      const open = sum(mv.filter(m => m.ts < from || (inR(m.ts) && m.type === 'Opening stock')), m => m.qty);
+      const pl = S.plines.filter(l => l.pid === p.id && inR(l.ts)); const sl = S.lines.filter(l => l.pid === p.id && inR(l.ts));
+      const adj = sum(inMv.filter(m => m.type === 'Adjustment'), m => m.qty);
+      const bq = sum(pl, l => l.qty), bv = sum(pl, l => l.qty * l.cost), sq = sum(sl, l => l.qty), sv = sum(sl, l => l.qty * l.rate), cogs = sum(sl, l => l.qty * l.cost);
+      return { p, open, close: open + sum(inMv.filter(m => m.type !== 'Opening stock'), m => m.qty), bq, bv, sq, sv, adj, profit: sv - cogs, pl, sl };
+    });
+    let y = pHead(doc, S, 'PRODUCT REPORT', `${dstr(from)} – ${dstr(to)}`);
+    doc.setFontSize(8.5); doc.setTextColor(95); doc.text('Opening + Purchased - Sold +/- Adjusted = Closing stock. Profit = sale value - purchase cost of the goods sold.', 14, y); doc.setTextColor(25); y += 4;
+    y = pTable(doc, y, ['Product', 'Opening', 'Purchased', 'Avg buy', 'Sold', 'Avg sell', 'Adj.', 'Closing', 'Purchase value', 'Sale value', 'Profit'],
+      rows.map(r => [r.p.name, r.open, r.bq || '', r.bq ? n0(r.bv / r.bq) : '', r.sq || '', r.sq ? n0(r.sv / r.sq) : '', r.adj || '', r.close, r.bv ? n0(r.bv) : '', r.sv ? n0(r.sv) : '', r.sq ? n0(r.profit) : '']),
+      { right: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10], foot: ['Total', '', sum(rows, r => r.bq), '', sum(rows, r => r.sq), '', '', '', n0(sum(rows, r => r.bv)), n0(sum(rows, r => r.sv)), n0(sum(rows, r => r.profit))] });
+    rows.filter(r => r.pl.length || r.sl.length).forEach(r => {
+      if (y > 165) { doc.addPage('a4', 'l'); y = 18; }
+      y = pH2(doc, y, `${r.p.name}  (${r.p.unit})  —  opening ${r.open}, purchased ${r.bq}, sold ${r.sq}, closing ${r.close}`);
+      if (r.pl.length) y = pTable(doc, y + 2, ['Purchased from', 'Date', 'Ref', 'Qty', 'Buy price', 'Amount'], r.pl.map(l => [l.supName, dshort(l.ts), l.ref, l.qty, n0(l.cost), n0(l.qty * l.cost)]), { right: [3, 4, 5], foot: ['Total purchased', '', '', r.bq, r.bq ? n0(r.bv / r.bq) + ' avg' : '', n0(r.bv)] });
+      if (r.sl.length) {
+        const by = {}; r.sl.forEach(l => { const k = l.cid ? (S.customers[l.cid] || {}).name || '?' : (l.walkin || 'Walk-in'); by[k] = by[k] || { q: 0, v: 0, c: 0, n: 0 }; by[k].q += l.qty; by[k].v += l.qty * l.rate; by[k].c += l.qty * l.cost; by[k].n++; });
+        y = pTable(doc, y + (r.pl.length ? 0 : 2), ['Sold to', 'Times', 'Qty', 'Avg sell price', 'Sale amount', 'Profit'], Object.entries(by).sort((a, b) => b[1].q - a[1].q).map(([k, v]) => [k, v.n, v.q, n0(v.v / v.q), n0(v.v), n0(v.v - v.c)]), { right: [1, 2, 3, 4, 5], foot: ['Total sold', '', r.sq, r.sq ? n0(r.sv / r.sq) + ' avg' : '', n0(r.sv), n0(r.profit)] });
+      }
+    });
+    const bs = {}; S.plines.filter(l => inR(l.ts)).forEach(l => { bs[l.supName] = (bs[l.supName] || 0) + l.qty * l.cost; });
+    if (Object.keys(bs).length) { if (y > 170) { doc.addPage('a4', 'l'); y = 18; } y = pH2(doc, y, 'Purchases by supplier'); y = pTable(doc, y + 2, ['Supplier', 'Amount'], Object.entries(bs).sort((a, b) => b[1] - a[1]).map(([k, v]) => [k, n0(v)]), { right: [1] }); }
+  }, true);
+}
+
 /* ---------- render ---------- */
 function header(S) {
   const on = isOnline(), pend = D.outbox.length, sy = ui.syncing;
@@ -1003,7 +1170,7 @@ function loginView() {
   <label>Username</label><input id="lu" autocapitalize="none" autocomplete="username" placeholder="e.g. ali">
   <label>PIN</label><input id="lp" type="password" inputmode="numeric" autocomplete="current-password" placeholder="••••">
   <button class="btn block" style="margin-top:16px" ${ui.busy ? 'disabled' : ''}>${ui.busy ? 'Logging in…' : 'Log in'}</button>
-  <div class="card" style="margin-top:18px;font-size:13px"><b>Demo logins</b><div class="muted">Owner: <b>owner</b> / 1234<br>Order taker: <b>ali</b> / 1111</div></div></form>`;
+  <div class="muted" style="margin-top:16px;text-align:center">First time? Owner login is <b>owner</b> / <b>1234</b> — change the PIN after logging in.</div></form>`;
 }
 function render() {
   const app = document.getElementById('app'); app.className = sess ? 'in' : 'out';

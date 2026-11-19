@@ -9,11 +9,12 @@ const { seedUsers, seedEvents } = require('./seed');
 
 const PORT = process.env.PORT || 3000;
 const SECRET = process.env.SECRET || 'dev-secret-change-me';
-const SEED_DEMO = process.env.SEED_DEMO !== 'false';
+const SEED_DEMO = process.env.SEED_DEMO === 'true';
+const BIZ = { bizName: process.env.BIZ_NAME || 'Bhawan Das Traders', address: process.env.BIZ_ADDRESS || 'Hyderabad, Sindh', phone: process.env.BIZ_PHONE || '', footer: 'Thank you for your business', paper: 't80' };
 const ROLES = ['owner', 'dispatch', 'taker'];
 const ALLOWED = {
   owner: ['product', 'stock_in', 'customer', 'opening', 'cash_open', 'order', 'status', 'payment', 'expense', 'counter',
-    'supplier', 'sopening', 'purchase', 'supplier_pay', 'pay_review', 'settings', 'stock_adj', 'product_upd'],
+    'supplier', 'sopening', 'purchase', 'supplier_pay', 'pay_review', 'settings', 'stock_adj', 'product_upd', 'customer_upd', 'cust_price'],
   dispatch: ['customer', 'opening', 'status', 'payment'],
   taker: ['customer', 'opening', 'order', 'status', 'payment'],
 };
@@ -194,8 +195,10 @@ app.patch('/api/users/:id', auth, ownerOnly, wrap(async (req, res) => {
 // Owner: wipe all records (keeps users). demo=true reloads sample data.
 app.post('/api/reset', auth, ownerOnly, wrap(async (req, res) => {
   if (req.body.confirm !== 'RESET') return res.status(400).json({ error: 'Type RESET to confirm' });
+  const keep = (await store.since(0)).filter(e => e.t === 'settings').pop(); // keep business details
   await store.clearEvents('e' + Date.now());
   if (req.body.demo) await store.insert(seedEvents());
+  else await store.insert([keep ? { ...keep, id: 'set' + Date.now(), ts: Date.now() } : settingsEvent()]);
   res.json({ ok: true });
 }));
 
@@ -204,13 +207,18 @@ app.use(express.static(path.join(__dirname, 'public'), {
 }));
 app.get('*', (req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
 
+function settingsEvent() { return { id: 'set' + Date.now(), t: 'settings', p: BIZ, ts: Date.now(), by: 'u_owner', byName: 'Owner', byRole: 'owner' }; }
+
 /* ---------------- boot ---------------- */
 (async () => {
   await store.init();
   if (!(await store.users()).length) {
-    for (const u of seedUsers) await store.addUser({ ...u, pinHash: hashPin(u.pin), active: true });
-    console.log('Created default users: owner/1234, ali/1111');
-    if (SEED_DEMO && (await store.count()) === 0) { await store.insert(seedEvents()); console.log('Loaded demo data'); }
+    for (const u of seedUsers.filter(u => SEED_DEMO || u.role === 'owner')) await store.addUser({ ...u, pinHash: hashPin(u.pin), active: true });
+    console.log('Created owner login: owner / 1234 (change the PIN after first login)');
+    if ((await store.count()) === 0) {
+      if (SEED_DEMO) { await store.insert(seedEvents()); console.log('Loaded demo data'); }
+      else await store.insert([settingsEvent()]);
+    }
   }
   app.listen(PORT, () => console.log(`TradeBook running on :${PORT} using ${store.kind}`));
 })().catch(e => { console.error(e); process.exit(1); });
