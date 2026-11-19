@@ -1,5 +1,5 @@
 // Offline shell: network-first for app files, cached copy when offline. API calls are never cached.
-const C = 'tradebook-v4';
+const C = 'tradebook-v5';
 const SHELL = ['/', '/app.js', '/manifest.webmanifest', '/icon-192.png', '/icon-512.png', '/vendor/jspdf.umd.min.js', '/vendor/jspdf.plugin.autotable.min.js'];
 self.addEventListener('install', e => { e.waitUntil(caches.open(C).then(c => c.addAll(SHELL))); self.skipWaiting(); });
 self.addEventListener('activate', e => {

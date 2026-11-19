@@ -283,6 +283,7 @@ function saveOrder() {
 }
 function setStatus(oid, status, extra) { emit('status', { oid, status, ...(extra || {}) }); }
 function saveCustPrices(cid) { const prices = {}; document.querySelectorAll('.rin.cp').forEach(i => prices[i.dataset.pid] = i.value === '' ? null : +i.value); emit('cust_price', { cid, prices, priceType: 'c' }); openSheet({ type: 'shop', cid }); toast('✅ Price list saved', 'ok'); }
+function toggleRp(pid, on) { const a = new Set(ui.rpids || []); on ? a.add(pid) : a.delete(pid); ui.rpids = [...a]; ui.sheet._keep = 1; drawSheet(); }
 function approveAll() { const pp = pendingPays(view()); pp.forEach(p => emit('pay_review', { payId: p.id, ok: true }, true)); closeSheet(); toast(`✅ ${pp.length} recoveries approved`, 'ok'); }
 function review(payId, ok) { emit('pay_review', { payId, ok }); toast(ok ? '✅ Recovery approved — added to khata' : 'Recovery rejected', ok ? 'ok' : ''); if (ui.sheet) drawSheet(); }
 
@@ -489,8 +490,14 @@ function drawSheet() {
     case 'pin': h = sh('Set new PIN', `<label>New PIN (4–8 digits)</label><input id="np1" inputmode="numeric"><button class="btn block" style="margin-top:14px" onclick="savePin('${s.uid}')">Save PIN</button>`); break;
     case 'reports': h = sh('📄 Reports & PDFs', `<p class="muted">Pick dates, then tap a report. Every PDF can be printed, downloaded or shared on WhatsApp.</p>${dateRange()}
       <div class="btns" style="margin-top:8px"><button class="btn sm alt" onclick="document.getElementById('rf').value=isoDay(monthStart());document.getElementById('rt').value=isoDay(now())">This month</button><button class="btn sm alt" onclick="const d=new Date();document.getElementById('rf').value=isoDay(new Date(d.getFullYear(),d.getMonth()-1,1));document.getElementById('rt').value=isoDay(new Date(d.getFullYear(),d.getMonth(),0))">Last month</button><button class="btn sm alt" onclick="document.getElementById('rf').value=isoDay(now());document.getElementById('rt').value=isoDay(now())">Today</button></div>
+      <div class="card" style="margin-top:12px;background:#f9fafb">
+        <div class="row"><div><b>Products in product report</b><div class="muted">${ui.rpids && ui.rpids.length ? ui.rpids.map(id => esc((S.products[id] || {}).name)).join(', ') : 'All products'}</div></div><button class="btn sm alt" onclick="ui.rpick=!ui.rpick;ui.sheet._keep=1;drawSheet()">${ui.rpick ? 'Done' : 'Choose'}</button></div>
+        ${ui.rpick ? `<input placeholder="Search product…" style="margin-top:10px" oninput="filterRows(this.value,'.rpk','rq')" value="${esc(ui.rq || '')}">
+        <div class="btns" style="margin-top:8px"><button class="btn sm alt" onclick="ui.rpids=null;ui.sheet._keep=1;drawSheet()">All products</button><button class="btn sm alt" onclick="ui.rpids=[];ui.sheet._keep=1;drawSheet()">Clear</button></div>
+        <div style="max-height:260px;overflow:auto;margin-top:6px">${Object.values(S.products).sort((a, b) => a.name.localeCompare(b.name)).map(p => `<label class="rpk" data-n="${esc(p.name.toLowerCase())}" style="display:flex;gap:10px;align-items:center;font-weight:500;font-size:14px;margin:0;padding:8px 2px;border-bottom:1px solid #eef0f2;color:#1b1f24;${(ui.rq && !p.name.toLowerCase().includes(ui.rq.toLowerCase())) ? 'display:none' : ''}"><input type="checkbox" style="width:auto" ${ui.rpids && ui.rpids.includes(p.id) ? 'checked' : ''} onchange="toggleRp('${p.id}',this.checked)"> ${esc(p.name)} <span class="muted" style="margin:0">· ${esc(p.unit)} · stock ${p.stock}</span></label>`).join('')}</div>` : ''}
+      </div>
       <div class="rgrid">
-        <button class="btn" onclick="pdfProducts(...rangeVals())">📦 Product report<br><span>bought from whom · sold to whom · buy & sell price</span></button>
+        <button class="btn" onclick="pdfProducts(...rangeVals(),ui.rpids)">📦 Product report<br><span>${ui.rpids && ui.rpids.length ? ui.rpids.length + ' selected product(s)' : 'all products'} · from whom · to whom</span></button>
         <button class="btn alt" onclick="pdfSummary(...rangeVals())">📊 Business summary<br><span>sales, profit, cash</span></button>
         <button class="btn alt" onclick="pdfOrders(...rangeVals())">🧾 Orders report<br><span>by order taker</span></button>
         <button class="btn alt" onclick="pdfCashbook(...rangeVals())">💵 Cash book<br><span>all in / out</span></button>
@@ -659,7 +666,7 @@ function drawSheet() {
       let run = 0; const mvs = S.moves.filter(m => m.pid === p.id).sort((a, b) => a.ts - b.ts).map(m => { run += m.qty; return { ...m, run }; }).reverse();
       h = sh(esc(p.name), `<div class="muted">${esc(p.unit)} · cost ${rs(p.cost)} · wholesale ${rs(p.w)} · retail ${rs(p.r)}</div>
       <div class="card row" style="margin-top:10px;background:#f9fafb"><span>In stock</span><b class="${p.stock < 10 ? 'red' : ''}" style="font-size:22px">${p.stock} <span class="muted">${esc(p.unit)}</span></b></div>
-      <div class="btns"><button class="btn" onclick="openPurchase()">+ Purchase</button><button class="btn alt" onclick="openSheet({type:'adj',pid:'${p.id}'})">± Adjust stock</button><button class="btn alt" onclick="openSheet({type:'editprod',pid:'${p.id}'})">✏️ Edit rates</button></div>
+      <div class="btns"><button class="btn" onclick="openPurchase()">+ Purchase</button><button class="btn alt" onclick="openSheet({type:'adj',pid:'${p.id}'})">± Adjust stock</button><button class="btn alt" onclick="openSheet({type:'editprod',pid:'${p.id}'})">✏️ Edit rates</button><button class="btn alt" onclick="ui.rpids=['${p.id}'];openSheet({type:'reports'})">📦 Product report</button></div>
       <h2>Stock movements</h2><table><tr><th>Date</th><th>Type</th><th class="r">In</th><th class="r">Out</th><th class="r">Stock</th></tr>
       ${mvs.slice(0, 80).map(m => `<tr><td class="muted" style="white-space:nowrap">${dshort(m.ts)}</td><td>${esc(m.type)} <span class="muted">${esc(m.ref)}</span>${m.pend ? ' ⏳' : ''}</td><td class="r green">${m.qty > 0 ? m.qty : ''}</td><td class="r red">${m.qty < 0 ? -m.qty : ''}</td><td class="r"><b>${m.run}</b></td></tr>`).join('') || '<tr><td colspan="5" class="muted">No movements</td></tr>'}</table>`);
       break;
@@ -1126,10 +1133,11 @@ function pdfSummary(from, to) {
   });
 }
 
-function pdfProducts(from, to) {
+function pdfProducts(from, to, pids) {
+  const sel = pids && pids.length ? new Set(pids) : null;
   makePdf('Product report', 'Product_report_' + isoDay(from) + '_to_' + isoDay(to), (doc, S) => {
     const inR = t => t >= from && t <= to;
-    const ps = Object.values(S.products).sort((a, b) => a.name.localeCompare(b.name));
+    const ps = Object.values(S.products).filter(p => !sel || sel.has(p.id)).sort((a, b) => a.name.localeCompare(b.name));
     const rows = ps.map(p => {
       const mv = S.moves.filter(m => m.pid === p.id); const inMv = mv.filter(m => inR(m.ts));
       const open = sum(mv.filter(m => m.ts < from || (inR(m.ts) && m.type === 'Opening stock')), m => m.qty);
@@ -1138,7 +1146,7 @@ function pdfProducts(from, to) {
       const bq = sum(pl, l => l.qty), bv = sum(pl, l => l.qty * l.cost), sq = sum(sl, l => l.qty), sv = sum(sl, l => l.qty * l.rate), cogs = sum(sl, l => l.qty * l.cost);
       return { p, open, close: open + sum(inMv.filter(m => m.type !== 'Opening stock'), m => m.qty), bq, bv, sq, sv, adj, profit: sv - cogs, pl, sl };
     });
-    let y = pHead(doc, S, 'PRODUCT REPORT', `${dstr(from)} – ${dstr(to)}`);
+    let y = pHead(doc, S, 'PRODUCT REPORT', `${dstr(from)} – ${dstr(to)}  ·  ${sel ? ps.length + ' selected product' + (ps.length > 1 ? 's' : '') : 'All products'}`);
     doc.setFontSize(8.5); doc.setTextColor(95); doc.text('Opening + Purchased - Sold +/- Adjusted = Closing stock. Profit = sale value - purchase cost of the goods sold.', 14, y); doc.setTextColor(25); y += 4;
     y = pTable(doc, y, ['Product', 'Opening', 'Purchased', 'Avg buy', 'Sold', 'Avg sell', 'Adj.', 'Closing', 'Purchase value', 'Sale value', 'Profit'],
       rows.map(r => [r.p.name, r.open, r.bq || '', r.bq ? n0(r.bv / r.bq) : '', r.sq || '', r.sq ? n0(r.sv / r.sq) : '', r.adj || '', r.close, r.bv ? n0(r.bv) : '', r.sv ? n0(r.sv) : '', r.sq ? n0(r.profit) : '']),
@@ -1152,7 +1160,7 @@ function pdfProducts(from, to) {
         y = pTable(doc, y + (r.pl.length ? 0 : 2), ['Sold to', 'Times', 'Qty', 'Avg sell price', 'Sale amount', 'Profit'], Object.entries(by).sort((a, b) => b[1].q - a[1].q).map(([k, v]) => [k, v.n, v.q, n0(v.v / v.q), n0(v.v), n0(v.v - v.c)]), { right: [1, 2, 3, 4, 5], foot: ['Total sold', '', r.sq, r.sq ? n0(r.sv / r.sq) + ' avg' : '', n0(r.sv), n0(r.profit)] });
       }
     });
-    const bs = {}; S.plines.filter(l => inR(l.ts)).forEach(l => { bs[l.supName] = (bs[l.supName] || 0) + l.qty * l.cost; });
+    const bs = {}; S.plines.filter(l => inR(l.ts) && (!sel || sel.has(l.pid))).forEach(l => { bs[l.supName] = (bs[l.supName] || 0) + l.qty * l.cost; });
     if (Object.keys(bs).length) { if (y > 170) { doc.addPage('a4', 'l'); y = 18; } y = pH2(doc, y, 'Purchases by supplier'); y = pTable(doc, y + 2, ['Supplier', 'Amount'], Object.entries(bs).sort((a, b) => b[1] - a[1]).map(([k, v]) => [k, n0(v)]), { right: [1] }); }
   }, true);
 }
